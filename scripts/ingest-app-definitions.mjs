@@ -207,6 +207,26 @@ const apps = [
       },
     ),
   ],
+  [
+    "paseo",
+    "Paseo",
+    "Make the first assignment to a Paseo executor. Paseo owns execution and task state.",
+    "developer",
+    "paseo.sh",
+    [],
+    method(
+      "handoff", "mcp_remote", "api_key", {}, "S3",
+      "Enter your Paseo assignment endpoint ending in /mcp/handoff and its restricted assignment key. Assign work with paseo_assign. Reuse the same task_ref and brief when a reply is lost. The acceptance receipt ends Paperclip's role; execution, goals, task state and review remain in Paseo.",
+      {
+        label: "Assign work to Paseo",
+        whenToUse: "Make the initial assignment to an allowed Paseo project.",
+        credentialFields: [field("apiKey", "Assignment key", "Paste the restricted Paseo assignment key")],
+        keyPlacement: { location: "header", name: "Authorization", prefix: "Bearer " },
+        consoleLinks: { docs: "https://github.com/z0rgoyok/paseo/blob/main/docs/paperclip-handoff.md" },
+      },
+    ),
+    { featured: true, docsUrl: "https://github.com/z0rgoyok/paseo/blob/main/docs/paperclip-handoff.md" },
+  ],
   ...[
     ["arcade", "Arcade", "https://api.arcade.dev/*", "https://docs.arcade.dev/en/operate/governance/mcp-gateways"],
     ["executor", "Executor", "https://executor.sh/*", "https://executor.sh/docs/mcp-proxy"],

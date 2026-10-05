@@ -719,7 +719,7 @@ describe("AppDefinition catalog", () => {
       "ticktick",
       "xero",
     ]);
-    expect(APP_STORE_DEFINITIONS).toHaveLength(56);
+    expect(APP_STORE_DEFINITIONS).toHaveLength(57);
     const connectableSlugs = new Set(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => entry.slug),
     );
@@ -1017,5 +1017,29 @@ describe("Railway provider", () => {
     expect(app.methods).toHaveLength(1);
     expect(app.methods[0]).toMatchObject({ key: "mcp-oauth", auth: "oauth", transport: "mcp_remote", ownershipModes: ["dcr", "customer"], riskTier: "S4", defaults: { serverUrl: "https://mcp.railway.com", scopesHint: ["openid", "offline_access", "workspace:member"], oauthAuthorizationParams: { prompt: "consent" } } });
     expect(JSON.stringify(app.methods)).toContain("Live Railway qualification is pending");
+  });
+});
+
+
+describe("Paseo assignment connector", () => {
+  it("uses governed remote MCP with a write-only scoped key and initial-assignment guidance", () => {
+    const app = APP_DEFINITIONS.find((entry) => entry.slug === "paseo")!;
+    expect(appSupportsCatalogSetup(app)).toBe(true);
+    expect(app.methods[0]).toMatchObject({
+      key: "handoff",
+      transport: "mcp_remote",
+      auth: "api_key",
+      keyPlacement: { location: "header", name: "Authorization", prefix: "Bearer " },
+    });
+    expect(app.methods[0].credentialFields).toEqual([
+      expect.objectContaining({ key: "apiKey", secret: true, required: true }),
+    ]);
+    expect(app.methods[0].guidanceMd).toContain("same task_ref");
+    expect(app.methods[0].guidanceMd).toContain("ends Paperclip's role");
+    expect(app.methods[0].defaults).toEqual({});
+    expect(app.branding).toEqual({
+      logoUrl: "/brands/apps/paseo.svg",
+      darkLogoUrl: "/brands/apps/paseo-dark.svg",
+    });
   });
 });

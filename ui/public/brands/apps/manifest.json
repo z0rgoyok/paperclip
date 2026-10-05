@@ -515,6 +515,13 @@
       "provider": "Zep",
       "catalogVisible": true,
       "localAsset": "/brands/apps/zep.png"
+    },
+    {
+      "slug": "paseo",
+      "provider": "Paseo",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/paseo.svg",
+      "darkAsset": "/brands/apps/paseo-dark.svg"
     }
   ]
 }
