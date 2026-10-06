@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   UnsafeChatPublicationError,
+  isSilentChatReplyPayload,
   projectSafeChatPublication,
   projectSafeChatPublicationText,
   sanitizeExternalChatUrl,
@@ -218,5 +219,32 @@ describe("chat publication projection", () => {
     expect(() => projectSafeChatPublicationText("a".repeat(1_000_001))).toThrow(
       UnsafeChatPublicationError,
     );
+  });
+});
+
+describe("silent chat replies", () => {
+  it("treats only an exact trimmed NO_REPLY text reply as silent", () => {
+    const reply = (text: string) =>
+      projectSafeChatPublication({
+        classification: "external",
+        source: "agent_comment",
+        text,
+      });
+    expect(isSilentChatReplyPayload(reply("NO_REPLY"))).toBe(true);
+    expect(isSilentChatReplyPayload(reply("  NO_REPLY\n"))).toBe(true);
+    expect(isSilentChatReplyPayload(reply("NO_REPLY, thanks"))).toBe(false);
+    expect(isSilentChatReplyPayload(reply("no_reply"))).toBe(false);
+    expect(isSilentChatReplyPayload(reply("Ordinary answer"))).toBe(false);
+    expect(
+      isSilentChatReplyPayload(
+        projectSafeChatPublication({
+          classification: "external",
+          source: "agent_comment",
+          text: "NO_REPLY",
+          attachmentIds: ["3f0c2a5e-8f9b-4c1d-9a2e-7b6c5d4e3f21"],
+        }),
+      ),
+    ).toBe(false);
+    expect(isSilentChatReplyPayload(null)).toBe(false);
   });
 });

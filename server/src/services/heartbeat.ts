@@ -3,6 +3,7 @@ import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { externalConversationStateSql, nonIdleSlackIssueCondition } from "./slack-conversation-state.js";
 import { settleSlackConversation } from "./slack-conversation-lifecycle.js";
 import { publicChatTaskUrl } from "./chat-task-url.js";
+import { effectiveChatCommunicationGuidance } from "./chat-communication-guidance.js";
 import { toolActionDeliveryService } from "./tool-action-delivery.js";
 import { githubBotConnectionIdsForRun } from "./chat-github-tools.js";
 import { readQueuedInteractionResponse } from "./queued-interaction-response.js";
@@ -123,6 +124,7 @@ import {
   chatActions,
   chatConversations,
   chatDeliveries,
+  chatEndpointResources,
   chatEndpoints,
   chatMessageLinks,
   companyMemberships,
@@ -10623,6 +10625,9 @@ export function heartbeatService(
       .select({
         chatCommunicationGuidance: chatConversations.communicationGuidance,
         chatAssignedAgentId: chatEndpoints.assignedAgentId,
+        chatProvider: chatEndpoints.provider,
+        chatIsDirectMessage: chatConversations.isDirectMessage,
+        chatRespondWithoutMention: chatEndpointResources.respondWithoutMention,
         externalConversationState: externalConversationStateSql(),
         conversationAgentId: issues.conversationAgentId,
         conversationUserId: issues.conversationUserId,
@@ -10664,7 +10669,13 @@ export function heartbeatService(
       .leftJoin(chatEndpoints, and(
         eq(chatEndpoints.companyId, chatConversations.companyId),
         eq(chatEndpoints.id, chatConversations.endpointId),
-        eq(chatEndpoints.provider, "slack"),
+        // Telegram carries guidance only for ambient group destinations.
+        inArray(chatEndpoints.provider, ["slack", "telegram"]),
+      ))
+      .leftJoin(chatEndpointResources, and(
+        eq(chatEndpointResources.companyId, chatConversations.companyId),
+        eq(chatEndpointResources.endpointId, chatConversations.endpointId),
+        eq(chatEndpointResources.id, chatConversations.resourceId),
       ))
       .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
       .then((rows) => rows[0] ?? null);
@@ -20817,7 +20828,12 @@ export function heartbeatService(
       // conversation snapshot. It belongs only to the endpoint's assigned agent.
       context.paperclipTaskCommunicationGuidance =
         issueContext?.chatAssignedAgentId === agent.id
-          ? issueContext.chatCommunicationGuidance
+          ? effectiveChatCommunicationGuidance({
+              captured: issueContext.chatCommunicationGuidance,
+              provider: issueContext.chatProvider,
+              isDirectMessage: issueContext.chatIsDirectMessage,
+              respondWithoutMention: issueContext.chatRespondWithoutMention,
+            })
           : null;
       const taskMarkdownInput = {
         issue: issueRef

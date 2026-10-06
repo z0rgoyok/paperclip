@@ -62876,6 +62876,234 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ).resolves.toHaveLength(0);
   });
 
+  it("admits unaddressed Telegram group messages only for respond-without-mention destinations and keeps NO_REPLY silent", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service, wakeup } =
+      await configuredTelegramEndpoint(fixture);
+    await db
+      .update(chatEndpoints)
+      .set({ status: "active" })
+      .where(eq(chatEndpoints.id, endpoint.id));
+    const chatId = "-10077119988";
+    const [resource] = await db
+      .insert(chatEndpointResources)
+      .values({
+        companyId: fixture.companyId,
+        endpointId: endpoint.id,
+        type: "chat",
+        providerResourceId: chatId,
+        label: "Telegram ambient group",
+        availability: "available",
+        enabled: true,
+      })
+      .returning();
+    const group = makeThread({
+      channelId: chatId,
+      id: `telegram:${chatId}`,
+      name: "Telegram ambient group",
+    });
+    const deliveryFor = (messageId: string) =>
+      db
+        .select()
+        .from(chatDeliveries)
+        .where(
+          eq(chatDeliveries.providerEventId, `${group.thread.id}:${messageId}`),
+        )
+        .then((rows) => rows[0] ?? null);
+
+    // Default off: an ordinary group message stays filtered as before.
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: group.thread,
+      message: makeMessage({
+        id: `${chatId}:1`,
+        text: "ambient-off-private-marker",
+        userId: "telegram-ambient-user",
+      }),
+      trigger: "unaddressed_message",
+    });
+    expect(await deliveryFor(`${chatId}:1`)).toMatchObject({
+      state: "filtered",
+      redactedError: "Message did not address the agent",
+      normalizedEvent: { filtering: { contentRetained: false } },
+    });
+    expect(await service.listConversations(endpoint.id)).toEqual([]);
+    expect(wakeup).not.toHaveBeenCalled();
+
+    // Omitting the flag keeps it; only Telegram group destinations accept it.
+    const listed = await service.replaceResources(endpoint.id, [
+      { id: resource!.id, enabled: true },
+    ]);
+    expect(listed.find((row) => row.id === resource!.id)).toMatchObject({
+      respondWithoutMention: false,
+    });
+    const [directResource] = await db
+      .insert(chatEndpointResources)
+      .values({
+        companyId: fixture.companyId,
+        endpointId: endpoint.id,
+        type: "direct_message",
+        providerResourceId: "77119988",
+        label: "Telegram DM",
+        availability: "available",
+        enabled: true,
+      })
+      .returning();
+    await expect(
+      service.replaceResources(endpoint.id, [
+        { id: directResource!.id, enabled: true, respondWithoutMention: true },
+      ]),
+    ).rejects.toMatchObject({ status: 422 });
+    const updated = await service.replaceResources(endpoint.id, [
+      { id: resource!.id, enabled: true, respondWithoutMention: true },
+    ]);
+    expect(updated.find((row) => row.id === resource!.id)).toMatchObject({
+      enabled: true,
+      respondWithoutMention: true,
+    });
+
+    // Bot authors, including this bot, are never admitted.
+    for (const [index, author] of [
+      { isBot: true, isMe: false },
+      { isBot: false, isMe: true },
+    ].entries()) {
+      const botMessage = makeMessage({
+        id: `${chatId}:${2 + index}`,
+        text: "bot-authored-group-message",
+        userId: `telegram-bot-${index}`,
+      });
+      await deliverMessage({
+        callbacks,
+        endpointId: endpoint.id,
+        provider: "telegram",
+        thread: group.thread,
+        message: {
+          ...botMessage,
+          author: { ...botMessage.author, ...author },
+        } as unknown as Message,
+        trigger: "unaddressed_message",
+      });
+      expect(await deliveryFor(`${chatId}:${2 + index}`)).toBeNull();
+    }
+    expect(wakeup).not.toHaveBeenCalled();
+
+    // Enabled: an unaddressed human message follows the mention path.
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: group.thread,
+      message: makeMessage({
+        id: `${chatId}:4`,
+        text: "does anyone know the deploy status?",
+        userId: "telegram-ambient-user",
+      }),
+      trigger: "unaddressed_message",
+    });
+    expect(await deliveryFor(`${chatId}:4`)).toMatchObject({
+      state: "processed",
+    });
+    const [conversation] = await service.listConversations(endpoint.id);
+    if (!conversation) throw new Error("Expected ambient group conversation");
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    expect(group.subscribe).toHaveBeenCalled();
+    const [storedConversation] = await db
+      .select({ guidance: chatConversations.communicationGuidance })
+      .from(chatConversations)
+      .where(eq(chatConversations.id, conversation.id));
+    expect(storedConversation?.guidance).toContain("exactly NO_REPLY");
+
+    // Subscribed traffic in the same group continues the same task.
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: group.thread,
+      message: makeMessage({
+        id: `${chatId}:5`,
+        text: "thanks, never mind",
+        userId: "telegram-ambient-user",
+      }),
+      trigger: "subscribed_message",
+    });
+    expect(wakeup).toHaveBeenCalledTimes(2);
+    expect(await service.listConversations(endpoint.id)).toHaveLength(1);
+
+    const providerRuntime = runtime.endpoints.get(endpoint.id);
+    if (!providerRuntime) throw new Error("Expected Telegram provider runtime");
+    providerRuntime.posts.length = 0;
+    const finishRun = async (providerMessageId: string, body: string) => {
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId: fixture.companyId,
+        agentId: endpoint.assignedAgentId,
+        status: "succeeded",
+        contextSnapshot: await chatWakeContext({
+          endpointId: endpoint.id,
+          issueId: conversation.issueId,
+          provider: "telegram",
+          providerMessageId,
+        }),
+        resultJson: {
+          presentationDecision: {
+            chosenSource: "final_agent_message",
+            commentAction: "create",
+            reasonCodes: [],
+          },
+        },
+      });
+      const comment = await addSelectedChatFinal({
+        agentId: endpoint.assignedAgentId,
+        body,
+        companyId: fixture.companyId,
+        issueId: conversation.issueId,
+        runId,
+      });
+      await enqueueChatRunMilestones(db);
+      await service.processPendingPublications();
+      return comment;
+    };
+
+    // NO_REPLY keeps the task comment but sends nothing to the group.
+    const silent = await finishRun(`${chatId}:4`, "  NO_REPLY\n");
+    expect(providerRuntime.posts).toEqual([]);
+    expect(group.post).not.toHaveBeenCalled();
+    await expect(
+      db
+        .select({
+          state: chatPublications.state,
+          redactedError: chatPublications.redactedError,
+        })
+        .from(chatPublications)
+        .where(eq(chatPublications.commentId, silent.id)),
+    ).resolves.toEqual([
+      {
+        state: "cancelled",
+        redactedError: "Agent chose not to reply (NO_REPLY)",
+      },
+    ]);
+    await expect(
+      db
+        .select({ id: chatPublications.id })
+        .from(chatPublications)
+        .where(
+          and(
+            eq(chatPublications.conversationId, conversation.id),
+            eq(chatPublications.state, "published"),
+          ),
+        ),
+    ).resolves.toEqual([]);
+
+    // An ordinary reply is published as usual.
+    await finishRun(`${chatId}:5`, "Deploy finished ten minutes ago.");
+    expect(providerRuntime.posts).toEqual([
+      { threadId: group.thread.id, text: "Deploy finished ten minutes ago." },
+    ]);
+  });
+
   it.each([
     "current",
     "restart",

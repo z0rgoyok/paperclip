@@ -270,6 +270,36 @@ export function projectSafeChatPublicationText(input: string): string {
   return output;
 }
 
+/**
+ * An agent that reads ambient group traffic answers with exactly this marker
+ * when no reply is needed. Paperclip keeps the task comment but publishes
+ * nothing to the provider.
+ */
+export const CHAT_SILENT_REPLY_MARKER = "NO_REPLY";
+
+/** True only for the bare marker, optionally framed by whitespace/newlines. */
+export function isSilentChatReplyText(text: unknown): boolean {
+  return typeof text === "string" && text.trim() === CHAT_SILENT_REPLY_MARKER;
+}
+
+/**
+ * A plain-text publication whose whole body is the silent marker. Cards,
+ * interactions, attachments, progress, and transport parts are never silent.
+ */
+export function isSilentChatReplyPayload(
+  payload: SafeChatPublicationPayload | null | undefined,
+): boolean {
+  if (!payload) return false;
+  return (
+    isSilentChatReplyText(payload.text) &&
+    !payload.progressState &&
+    !payload.card &&
+    !payload.interactionId &&
+    !payload.transportPart &&
+    !payload.attachmentIds?.length
+  );
+}
+
 function projectAttachmentIds(
   input: readonly string[] | null | undefined,
 ): string[] | undefined {

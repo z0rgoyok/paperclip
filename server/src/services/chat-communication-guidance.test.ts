@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { CHAT_PROVIDERS, updateChatEndpointSchema } from "@paperclipai/shared";
-import { buildChatCommunicationGuidance } from "./chat-communication-guidance.js";
+import {
+  buildChatCommunicationGuidance,
+  effectiveChatCommunicationGuidance,
+} from "./chat-communication-guidance.js";
 
 describe("initial medium communication guidance", () => {
   it("guides Slack presentation while retaining ordinary agent tools and explicit output requests", () => {
@@ -15,6 +18,31 @@ describe("initial medium communication guidance", () => {
 
   it.each(CHAT_PROVIDERS.filter((provider) => provider !== "slack"))("leaves %s unchanged", (provider) => {
     expect(buildChatCommunicationGuidance({ provider, isDirectMessage: false, communicationInstructions: "Ignored" })).toBeNull();
+  });
+
+  it("tells ambient Telegram group agents to answer NO_REPLY when no reply is needed", () => {
+    const guidance = buildChatCommunicationGuidance({
+      provider: "telegram",
+      isDirectMessage: false,
+      respondWithoutMention: true,
+      communicationInstructions: "Answer in Russian.",
+    });
+    expect(guidance).toContain("Communication in a Telegram group");
+    expect(guidance).toContain("exactly NO_REPLY");
+    expect(guidance).toContain('"Answer in Russian."');
+    expect(buildChatCommunicationGuidance({ provider: "telegram", isDirectMessage: true, respondWithoutMention: true })).toBeNull();
+    expect(buildChatCommunicationGuidance({ provider: "telegram", isDirectMessage: false, respondWithoutMention: false })).toBeNull();
+    expect(buildChatCommunicationGuidance({ provider: "discord", isDirectMessage: false, respondWithoutMention: true })).toBeNull();
+  });
+
+  it("follows the live Telegram ambient flag for tasks captured before it changed", () => {
+    const ambient = buildChatCommunicationGuidance({ provider: "telegram", isDirectMessage: false, respondWithoutMention: true });
+    expect(effectiveChatCommunicationGuidance({ captured: null, provider: "telegram", isDirectMessage: false, respondWithoutMention: true })).toBe(ambient);
+    expect(effectiveChatCommunicationGuidance({ captured: ambient, provider: "telegram", isDirectMessage: false, respondWithoutMention: true })).toBe(ambient);
+    expect(effectiveChatCommunicationGuidance({ captured: ambient, provider: "telegram", isDirectMessage: false, respondWithoutMention: false })).toBeNull();
+    expect(effectiveChatCommunicationGuidance({ captured: null, provider: "telegram", isDirectMessage: true, respondWithoutMention: true })).toBeNull();
+    const slack = buildChatCommunicationGuidance({ provider: "slack", isDirectMessage: false });
+    expect(effectiveChatCommunicationGuidance({ captured: slack, provider: "slack", isDirectMessage: false, respondWithoutMention: true })).toBe(slack);
   });
 
   it("accepts clearing instructions and rejects oversized instructions and unsupported controls", () => {

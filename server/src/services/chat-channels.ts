@@ -260,7 +260,10 @@ import {
   NativeChatReviewPresentationContentionError,
 } from "./native-runtime/native-chat-review-presentation.js";
 import { isExternalChatWaitAuthorizationContention } from "./native-runtime/chat-attachment-reuse.js";
-import { projectSafeChatPublication } from "./chat-publication-projection.js";
+import {
+  isSilentChatReplyPayload,
+  projectSafeChatPublication,
+} from "./chat-publication-projection.js";
 import { safeChatTaskUrl } from "./chat-task-url.js";
 import {
   resyncGitHubAppWebhook,
@@ -1716,6 +1719,29 @@ function chatSurfaceKind(
  * actually control. Teams channels, and every other non-DM destination,
  * retain the explicit per-resource enablement gate shown in Settings.
  */
+/**
+ * Telegram ambient group intake: an enabled, available group/topic destination
+ * that the operator opted into respondWithoutMention treats every human
+ * message as addressed to the agent.
+ */
+export function telegramAmbientMessageAdmitted(
+  resource:
+    | Pick<
+        ResourceRow,
+        "type" | "enabled" | "availability" | "respondWithoutMention"
+      >
+    | null
+    | undefined,
+): boolean {
+  return (
+    !!resource &&
+    resource.type !== "direct_message" &&
+    resource.enabled &&
+    resource.availability === "available" &&
+    resource.respondWithoutMention === true
+  );
+}
+
 function nonDirectDestinationAllowed(
   endpoint: EndpointRow,
   resource: ResourceRow | null | undefined,
@@ -14514,7 +14540,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     }
     const providerEventId = `${durableExternalThreadIdentity(thread.id)}:${message.id}`;
     const surfaceKind = chatSurfaceKind(endpoint.provider, thread);
-    const addressed =
+    // Mutable only for Telegram ambient group intake: the admission
+    // transaction below may promote an unaddressed group message when the
+    // locked destination row opts into respondWithoutMention. Every later
+    // stage (activation, subscription, filtering) then follows the mention path.
+    let addressed =
       endpoint.provider === "imessage-photon" ||
       trigger === "mention" ||
       trigger === "direct_message" ||
@@ -14924,6 +14954,16 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         // topic, every admitted turn must address the bot. A direct reply to a
         // bot message is normalized as a mention by the pinned adapter, while
         // unrelated subscribed traffic remains unaddressed and is filtered.
+        // An operator can opt one enabled destination into ambient intake;
+        // bot/self/system authors were already rejected above. This never
+        // performs first-setup activation: only an explicit mention can.
+        if (
+          !addressed &&
+          telegramAmbientMessageAdmitted(resource) &&
+          !message.author.isBot &&
+          !message.author.isMe
+        )
+          addressed = true;
         destinationAccepting =
           addressed &&
           nonDirectDestinationAllowed(
@@ -16062,6 +16102,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 provider: taskEndpoint.provider,
                 isDirectMessage: thread.isDM,
                 communicationInstructions: taskEndpoint.communicationInstructions,
+                respondWithoutMention: resource.respondWithoutMention,
               }),
               state: "active",
               lastActivityAt: new Date(),
@@ -27943,7 +27984,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
 
   async function replaceResources(
     endpointId: string,
-    updates: Array<{ id: string; enabled: boolean }>,
+    updates: Array<{
+      id: string;
+      enabled: boolean;
+      respondWithoutMention?: boolean;
+    }>,
     actorUserId?: string | null,
   ) {
     const initial = await endpointRecord(endpointId);
@@ -27976,8 +28021,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           const rows = await tx
             .select({
               id: chatEndpointResources.id,
+              type: chatEndpointResources.type,
               availability: chatEndpointResources.availability,
               enabled: chatEndpointResources.enabled,
+              respondWithoutMention:
+                chatEndpointResources.respondWithoutMention,
             })
             .from(chatEndpointResources)
             .where(
@@ -28005,20 +28053,63 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               "A destination must still be available from the provider before it can be enabled",
               { code: "chat_resource_unavailable", resourceId: unavailable.id },
             );
+          // Ambient group intake is a Telegram group/topic policy. Other
+          // providers and direct messages keep their addressing contract.
+          const typeById = new Map(rows.map((row) => [row.id, row.type]));
+          const ambientRejected = updates.find(
+            (entry) =>
+              entry.respondWithoutMention === true &&
+              (endpoint.provider !== "telegram" ||
+                typeById.get(entry.id) === "direct_message"),
+          );
+          if (ambientRejected)
+            throw unprocessable(
+              "Responding without a mention is supported only for Telegram group destinations",
+            );
           const finalEnabled = new Map(
             updates.map((entry) => [entry.id, entry.enabled]),
           );
+          const finalAmbient = new Map<string, boolean>();
+          for (const entry of updates)
+            if (entry.respondWithoutMention !== undefined)
+              finalAmbient.set(entry.id, entry.respondWithoutMention);
           const changes = rows
-            .filter((row) => row.enabled !== finalEnabled.get(row.id))
-            .map((row) => ({
-              resourceId: row.id,
-              before: { enabled: row.enabled },
-              after: { enabled: finalEnabled.get(row.id)! },
-            }));
+            .filter(
+              (row) =>
+                row.enabled !== finalEnabled.get(row.id) ||
+                (finalAmbient.has(row.id) &&
+                  row.respondWithoutMention !== finalAmbient.get(row.id)),
+            )
+            .map((row) => {
+              const ambientChanged =
+                finalAmbient.has(row.id) &&
+                row.respondWithoutMention !== finalAmbient.get(row.id);
+              return {
+                resourceId: row.id,
+                before: {
+                  enabled: row.enabled,
+                  ...(ambientChanged
+                    ? { respondWithoutMention: row.respondWithoutMention }
+                    : {}),
+                },
+                after: {
+                  enabled: finalEnabled.get(row.id)!,
+                  ...(ambientChanged
+                    ? { respondWithoutMention: finalAmbient.get(row.id)! }
+                    : {}),
+                },
+              };
+            });
           for (const entry of updates)
             await tx
               .update(chatEndpointResources)
-              .set({ enabled: entry.enabled, updatedAt: new Date() })
+              .set({
+                enabled: entry.enabled,
+                ...(entry.respondWithoutMention !== undefined
+                  ? { respondWithoutMention: entry.respondWithoutMention }
+                  : {}),
+                updatedAt: new Date(),
+              })
               .where(
                 and(
                   eq(chatEndpointResources.companyId, endpoint.companyId),
@@ -34079,13 +34170,43 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     return isUuidLike(runId) ? runId : null;
   }
 
+  async function ambientTelegramConversation(
+    conversationId: string,
+  ): Promise<boolean> {
+    const row = await db
+      .select({
+        isDirectMessage: chatConversations.isDirectMessage,
+        respondWithoutMention: chatEndpointResources.respondWithoutMention,
+      })
+      .from(chatConversations)
+      .innerJoin(
+        chatEndpointResources,
+        and(
+          eq(chatEndpointResources.id, chatConversations.resourceId),
+          eq(chatEndpointResources.endpointId, chatConversations.endpointId),
+        ),
+      )
+      .where(eq(chatConversations.id, conversationId))
+      .then((rows) => rows[0] ?? null);
+    return Boolean(row && !row.isDirectMessage && row.respondWithoutMention);
+  }
+
   async function runOwnershipMilestoneSupersessionReason(
     publication: typeof chatPublications.$inferSelect,
   ): Promise<string | null> {
     const progress = publication.payload.progressState;
-    if (progress && ["queued", "working"].includes(progress)) {
+    if (progress && ["queued", "working", "completed"].includes(progress)) {
       const endpoint = await endpointRecord(publication.endpointId);
-      if (endpoint?.endpoint.provider === "imessage-photon") return "iMessage uses typing instead of progress bubbles";
+      if (progress !== "completed" && endpoint?.endpoint.provider === "imessage-photon") return "iMessage uses typing instead of progress bubbles";
+      // Ambient Telegram groups start a run for every message and the agent
+      // may stay silent (NO_REPLY). A queued/working bubble or a generic
+      // "completed this turn" note would then be the only visible trace, so
+      // these destinations rely on typing and the agent's own reply instead.
+      if (
+        endpoint?.endpoint.provider === "telegram" &&
+        (await ambientTelegramConversation(publication.conversationId))
+      )
+        return "Ambient Telegram groups use typing instead of progress bubbles";
     }
     if (
       !progress ||
@@ -37122,9 +37243,55 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     }
   }
 
+  /**
+   * An agent answered with exactly the silent marker (`NO_REPLY`). Settle the
+   * publication as cancelled before any transport preparation so nothing is
+   * sent: no message, edit, draft, or error. The row itself stays, which keeps
+   * generic "completed" milestones suppressed exactly as for a delivered final,
+   * and the inbound receipt reaction is cleared like after a normal reply.
+   */
+  async function settleSilentPublication(
+    publication: typeof chatPublications.$inferSelect,
+  ): Promise<boolean> {
+    if (
+      isExplicitOperatorPublication(publication) ||
+      !isSilentChatReplyPayload(publication.payload)
+    )
+      return false;
+    const record = await endpointRecord(publication.endpointId);
+    const receiptRemovalActionIds = await db.transaction(async (tx) => {
+      const [cancelled] = await tx
+        .update(chatPublications)
+        .set({
+          state: "cancelled",
+          nextAttemptAt: null,
+          redactedError: "Agent chose not to reply (NO_REPLY)",
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(chatPublications.id, publication.id),
+            inArray(chatPublications.state, ["pending", "retry"]),
+          ),
+        )
+        .returning({ id: chatPublications.id });
+      if (!cancelled || !record) return [];
+      return stageTerminalReceiptReactionRemovals(tx as unknown as Db, {
+        endpoint: record.endpoint,
+        publication,
+        payload: publication.payload,
+        runtimeContext: runtimeContextForRecord(record),
+      });
+    });
+    for (const actionId of receiptRemovalActionIds)
+      scheduleMessageProcessing(() => processReceiptReaction(actionId));
+    return true;
+  }
+
   async function processSelectedPublication(
     selectedPublication: typeof chatPublications.$inferSelect,
   ): Promise<void> {
+    if (await settleSilentPublication(selectedPublication)) return;
     let publication: typeof chatPublications.$inferSelect;
     try {
       publication =
