@@ -183,6 +183,14 @@ export function isResolutionEligible(item: ChatActivityItem): boolean {
   );
 }
 
+/** Ambient intake is a Telegram group/topic policy, never a direct message. */
+export function supportsRespondWithoutMention(
+  provider: ChatProvider,
+  resourceType: string,
+): boolean {
+  return provider === "telegram" && resourceType !== "direct_message";
+}
+
 export function isIndividuallyToggleableResource(
   provider: ChatProvider,
   resourceType: string,
@@ -367,8 +375,12 @@ function Settings({
     queryFn: () => chatEndpointsApi.listResources(endpointId),
   });
   const saveResources = useMutation({
-    mutationFn: (resource: Pick<ChatEndpointResource, "id" | "enabled">) =>
-      chatEndpointsApi.updateResources(endpointId, [resource]),
+    mutationFn: (
+      resource: Pick<
+        ChatEndpointResource,
+        "id" | "enabled" | "respondWithoutMention"
+      >,
+    ) => chatEndpointsApi.updateResources(endpointId, [resource]),
     onSuccess: (resources) =>
       queryClient.setQueryData(
         queryKeys.chatEndpoints.resources(endpointId),
@@ -402,6 +414,15 @@ function Settings({
   const toggleResource = (resource: ChatEndpointResource, enabled: boolean) =>
     // A cached inventory must not overwrite another operator's unrelated edits.
     saveResources.mutate({ id: resource.id, enabled });
+  const toggleRespondWithoutMention = (
+    resource: ChatEndpointResource,
+    respondWithoutMention: boolean,
+  ) =>
+    saveResources.mutate({
+      id: resource.id,
+      enabled: resource.enabled,
+      respondWithoutMention,
+    });
   return (
     <section className="max-w-3xl space-y-7">
       {endpoint.provider === "imessage-photon" && <p className="text-sm text-muted-foreground">{endpoint.photonAllocation === "shared" ? "Shared Photon project · direct messages only. Enroll senders in Photon and link their Messages identities in Access. Groups cannot be enabled." : "Enable each group individually. Agent replies are visible to everyone in that group; only authorized senders can start work."}</p>}
@@ -466,30 +487,64 @@ function Settings({
         ) : (
           <div className="divide-y divide-border border-y border-border">
             {destinationResources.map((resource) => (
-              <div key={resource.id} className="flex items-center gap-3 py-3">
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium">
-                    {resource.label}
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    {resource.availability === "available"
-                      ? (resource.detail ?? resource.type)
-                      : "Unavailable at the provider"}
-                  </p>
-                  {resource.participants?.length ? <p className="mt-1 break-words text-xs text-muted-foreground">Participants: {resource.participants.join(", ")}</p> : null}
+              <div key={resource.id} className="py-3">
+                <div className="flex items-center gap-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium">
+                      {resource.label}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {resource.availability === "available"
+                        ? (resource.detail ?? resource.type)
+                        : "Unavailable at the provider"}
+                    </p>
+                    {resource.participants?.length ? <p className="mt-1 break-words text-xs text-muted-foreground">Participants: {resource.participants.join(", ")}</p> : null}
+                  </div>
+                  <ToggleSwitch
+                    aria-label={`Enable ${resource.label}`}
+                    checked={resource.enabled}
+                    disabled={
+                      endpoint.photonAllocation === "shared" ||
+                      resource.availability !== "available" ||
+                      saveResources.isPending
+                    }
+                    onCheckedChange={(enabled) =>
+                      toggleResource(resource, enabled)
+                    }
+                  />
                 </div>
-                <ToggleSwitch
-                  aria-label={`Enable ${resource.label}`}
-                  checked={resource.enabled}
-                  disabled={
-                    endpoint.photonAllocation === "shared" ||
-                    resource.availability !== "available" ||
-                    saveResources.isPending
-                  }
-                  onCheckedChange={(enabled) =>
-                    toggleResource(resource, enabled)
-                  }
-                />
+                {supportsRespondWithoutMention(endpoint.provider, resource.type) && (
+                  <div className="mt-2 ml-4 flex items-center gap-3 border-l border-border pl-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm">Respond without mention</p>
+                      <p className="text-xs text-muted-foreground">
+                        The agent reads every message in this group and decides
+                        itself whether to reply. Every message starts an agent
+                        run.
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        Telegram delivers ordinary group messages only when the
+                        bot&apos;s privacy mode is off (@BotFather → /setprivacy)
+                        or the bot is a group admin.
+                      </p>
+                    </div>
+                    <ToggleSwitch
+                      aria-label={`Respond without mention in ${resource.label}`}
+                      checked={resource.respondWithoutMention ?? false}
+                      disabled={
+                        !resource.enabled ||
+                        resource.availability !== "available" ||
+                        saveResources.isPending
+                      }
+                      onCheckedChange={(respondWithoutMention) =>
+                        toggleRespondWithoutMention(
+                          resource,
+                          respondWithoutMention,
+                        )
+                      }
+                    />
+                  </div>
+                )}
               </div>
             ))}
           </div>

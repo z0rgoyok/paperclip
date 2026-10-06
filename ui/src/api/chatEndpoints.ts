@@ -37,6 +37,8 @@ export interface ChatEndpointResource {
   label: string;
   availability: "available" | "unavailable" | "removed";
   enabled: boolean;
+  /** Telegram groups only: admit messages that do not mention the bot. */
+  respondWithoutMention?: boolean;
   detail?: string | null;
   participants?: string[];
 }
@@ -224,7 +226,11 @@ export const chatEndpointsApi = {
     ),
   updateResources: (
     endpointId: string,
-    resources: Array<{ id: string; enabled: boolean }>,
+    resources: Array<{
+      id: string;
+      enabled: boolean;
+      respondWithoutMention?: boolean;
+    }>,
   ) =>
     api.put<ChatEndpointResource[]>(`/chat-endpoints/${endpointId}/resources`, {
       resources,

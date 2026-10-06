@@ -5,6 +5,7 @@ import {
   isIndividuallyToggleableResource,
   isReplayEligible,
   isResolutionEligible,
+  supportsRespondWithoutMention,
   activityResolutionActions,
   activityResolutionDescription,
 } from "./ChatEndpointDetail";
@@ -224,5 +225,14 @@ describe("chat endpoint destination controls", () => {
       true,
     );
     expect(isIndividuallyToggleableResource("github", "repository")).toBe(true);
+  });
+
+  it("offers respond-without-mention only for Telegram group destinations", () => {
+    expect(supportsRespondWithoutMention("telegram", "chat")).toBe(true);
+    expect(supportsRespondWithoutMention("telegram", "direct_message")).toBe(
+      false,
+    );
+    expect(supportsRespondWithoutMention("slack", "channel")).toBe(false);
+    expect(supportsRespondWithoutMention("discord", "channel")).toBe(false);
   });
 });
