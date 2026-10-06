@@ -1,3 +1,4 @@
+import { ChatTypingRelay } from "./chat-typing.js";
 import { withSlackBoardLease } from "./slack-board-lease.js";
 import { mirrorSlackBoardComment, slackBoardReplyBindings } from "./slack-board-messages.js";
 import { authorizeSlackBoardPublication } from "./slack-board-authority.js";
@@ -15469,7 +15470,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         await acceptInboundWakeup(activeDelivery.id, attachmentResult);
         if (!(await processInboundWakeup(activeDelivery.id))) return;
         const acceptedWake = await db
-          .select({ status: chatActions.status })
+          .select({ action: chatActions })
           .from(chatActions)
           .where(
             and(
@@ -15479,7 +15480,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           )
           .limit(1)
           .then((rows) => rows[0] ?? null);
-        if (acceptedWake?.status !== "processed") return;
+        if (acceptedWake?.action.status !== "processed") return;
         // Recover the visible receipt as well as the durable wake. The
         // receipt action is idempotent and resolves the current runtime fence.
         await Promise.allSettled([
@@ -15494,7 +15495,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             : Promise.resolve(),
           endpoint.provider === "slack"
             ? Promise.resolve()
-            : thread.startTyping("Working…"),
+            : endpoint.provider === "telegram"
+              ? typing.start(acceptedWake.action as TelegramTypingSource)
+              : thread.startTyping("Working…"),
         ]);
         return;
       }
@@ -16590,7 +16593,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       await acceptInboundWakeup(activeDelivery.id, attachmentResult);
       if (!(await processInboundWakeup(activeDelivery.id))) return;
       const acceptedWake = await db
-        .select({ status: chatActions.status })
+        .select({ action: chatActions })
         .from(chatActions)
         .where(
           and(
@@ -16600,7 +16603,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         )
         .limit(1)
         .then((rows) => rows[0] ?? null);
-      if (acceptedWake?.status !== "processed") return;
+      if (acceptedWake?.action.status !== "processed") return;
       // Provider-visible acknowledgement begins only after the task, external
       // comment, durable wakeup request, delivery state, and message link commit.
       await Promise.allSettled([
@@ -16619,7 +16622,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         // reply below is the visible working state instead.
         endpoint.provider === "slack"
           ? Promise.resolve()
-          : thread.startTyping("Working…"),
+          : endpoint.provider === "telegram"
+            ? typing.start(acceptedWake.action as TelegramTypingSource)
+            : thread.startTyping("Working…"),
       ]);
     } catch (error) {
       const providerEffectAmbiguous =
@@ -37352,6 +37357,151 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     }
   }
 
+  type TelegramTypingSource = typeof chatActions.$inferSelect & {
+    conversationId: string;
+  };
+
+  const typing = new ChatTypingRelay<TelegramTypingSource>({
+    isActive: async (action) => {
+      if (shuttingDown) return false;
+      try {
+        return await db.transaction(async (tx) => {
+          // Reuse intake authority: blocked/quarantined senders, revoked access,
+          // reset conversations, disabled destinations and retired runtimes fail closed.
+          const context = await authorizeInboundWakeup(tx, action, {
+            nonblocking: true,
+            terminal: false,
+          });
+          if (
+            context.endpoint.provider !== "telegram" ||
+            context.endpoint.publicationMode !== "automatic" ||
+            action.payload.requestedByActorType !== "user" ||
+            context.issue.sourceTrust?.disposition === "quarantined"
+          )
+            return false;
+          const [receipt] = await tx
+            .select()
+            .from(agentWakeupRequests)
+            .where(
+              and(
+                eq(agentWakeupRequests.id, action.id),
+                eq(agentWakeupRequests.companyId, action.companyId),
+              ),
+            );
+          if (
+            !receipt ||
+            ["skipped", "failed", "cancelled"].includes(receipt.status)
+          )
+            return false;
+          const ownerId = receipt.payload?.coalescedIntoWakeupRequestId;
+          const [owner] =
+            typeof ownerId === "string" && isUuidLike(ownerId)
+              ? await tx
+                  .select()
+                  .from(agentWakeupRequests)
+                  .where(
+                    and(
+                      eq(agentWakeupRequests.id, ownerId),
+                      eq(agentWakeupRequests.companyId, action.companyId),
+                      eq(
+                        agentWakeupRequests.agentId,
+                        String(action.payload.agentId),
+                      ),
+                    ),
+                  )
+              : [receipt];
+          if (!owner || ["skipped", "failed", "cancelled"].includes(owner.status))
+            return false;
+          if (!owner.runId)
+            return ["queued", "deferred_issue_execution"].includes(owner.status);
+          const [run] = await tx
+            .select()
+            .from(heartbeatRuns)
+            .where(
+              and(
+                eq(heartbeatRuns.id, owner.runId),
+                eq(heartbeatRuns.companyId, action.companyId),
+                eq(heartbeatRuns.agentId, String(action.payload.agentId)),
+              ),
+            );
+          if (
+            !run ||
+            ["failed", "cancelled", "timed_out", "interrupted"].includes(
+              run.status,
+            )
+          )
+            return false;
+          const replies = await tx
+            .select({
+              state: chatPublications.state,
+              payload: chatPublications.payload,
+            })
+            .from(chatPublications)
+            .innerJoin(
+              issueComments,
+              and(
+                eq(issueComments.id, chatPublications.commentId),
+                eq(issueComments.companyId, action.companyId),
+                eq(issueComments.createdByRunId, run.id),
+              ),
+            )
+            .where(
+              and(
+                eq(chatPublications.companyId, action.companyId),
+                eq(chatPublications.endpointId, action.endpointId),
+                eq(chatPublications.conversationId, action.conversationId),
+                sql`${chatPublications.payload}->>'progressState' is null`,
+              ),
+            );
+          if (
+            replies.some(
+              (reply) =>
+                ["published", "cancelled", "failed"].includes(reply.state) ||
+                isSilentChatReplyPayload(reply.payload),
+            )
+          )
+            return false;
+          // A successful run may still be waiting for its selected response
+          // to reach the publication outbox, or for provider delivery to finish.
+          const presentation = run.resultJson?.presentationDecision as
+            Record<string, unknown> | undefined;
+          return (
+            ["queued", "running", "scheduled_retry"].includes(run.status) ||
+            (run.status === "succeeded" &&
+              (presentation?.commentAction === "create" ||
+                replies.some((reply) =>
+                  ["pending", "retry", "streaming"].includes(reply.state),
+                )))
+          );
+        });
+      } catch (error) {
+        if (isExternalActionAuthorizationChange(error)) return false;
+        throw error;
+      }
+    },
+    send: async (action) => {
+      const record = await endpointRecord(action.endpointId);
+      if (!record) return;
+      const endpointRuntime = await runtimeFor(record.endpoint);
+      const conversation = await db
+        .select({ threadId: chatConversations.externalThreadId })
+        .from(chatConversations)
+        .where(
+          and(
+            eq(chatConversations.id, action.conversationId),
+            eq(chatConversations.endpointId, action.endpointId),
+          ),
+        )
+        .then((rows) => rows[0]);
+      if (conversation)
+        await endpointRuntime
+          .thread(conversation.threadId)
+          .startTyping("Working…");
+    },
+    onError: (error) =>
+      logger.warn({ error: redactError(error) }, "Chat typing refresh failed"),
+  });
+
   type ToolActivityDestination = {
     conversationId: string;
     endpointId: string;
@@ -37539,6 +37689,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         runtimeContext: runtimeContextForRecord(record),
       });
     });
+    await typing.settle(publication.conversationId);
     for (const actionId of receiptRemovalActionIds)
       scheduleMessageProcessing(() => processReceiptReaction(actionId));
     return true;
@@ -38219,6 +38370,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 );
                 await credentialLease.assertOwned(tx);
               });
+              await typing.settle(publication.conversationId);
               // Receipt cleanup is non-critical provider I/O. Dispatch it
               // after the terminal reply and durable action commit so a
               // slow reaction endpoint cannot hold the publication lane.
@@ -38852,9 +39004,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     observeRunOutput: (chunk: RunOutputChunk) => toolActivity.observe(chunk),
     /** Test helper: process queued output and send pending activity edits. */
     flushToolActivity: () => toolActivity.flush(),
+    /** Test helper: await in-flight typing checks and provider actions. */
+    flushTyping: () => typing.flush(),
     shutdown: async () => {
       shuttingDown = true;
       toolActivity.dispose();
+      await typing.dispose();
       await Promise.allSettled([...failedRetryTasks.values()]);
       unregisterFailedRetryAuthority();
       unregisterSlackTaskAuthority();
