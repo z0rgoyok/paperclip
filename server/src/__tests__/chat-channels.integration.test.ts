@@ -231,6 +231,7 @@ class FakeEndpointRuntime {
     chunks?: string[];
     files?: unknown[];
   }> = [];
+  readonly typing: string[] = [];
   readonly edits: Array<{
     threadId: string;
     messageId: string;
@@ -504,7 +505,7 @@ class FakeEndpointRuntime {
           this.deletes.push({ threadId: deletedThreadId, messageId });
         },
       },
-      startTyping: async () => undefined,
+      startTyping: async () => { this.typing.push(threadId); },
       subscribe: async () => undefined,
       post: async (message: unknown) => {
         await this.postHook?.();
@@ -1245,6 +1246,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         | "storage"
         | "reachAuthorizationBarrier"
         | "toolActivityMinEditIntervalMs"
+        | "typingProbeReadBarrier"
       >
     > & {
       cancelRun?: NonNullable<
@@ -63544,6 +63546,390 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       await deliveryFor(generalTopic.thread.id, `${chatId}:5`),
     ).toMatchObject({ state: "processed" });
   });
+
+  it("never starts typing for quarantined Telegram sender intake", async () => {
+    onTestFinished(() => vi.useRealTimers());
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service, wakeup } =
+      await configuredTelegramEndpoint(fixture);
+    await db
+      .update(chatEndpoints)
+      .set({ status: "active" })
+      .where(eq(chatEndpoints.id, endpoint.id));
+    const thread = makeThread({
+      channelId: "77115569",
+      id: "telegram:77115569",
+      isDM: true,
+    });
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: thread.thread,
+      message: makeMessage({
+        id: "77115569:1",
+        text: "Please check",
+        userId: "unlinked-typing-user",
+      }),
+      trigger: "direct_message",
+    });
+    expect(wakeup).toHaveBeenCalledOnce();
+    const [conversation] = await service.listConversations(endpoint.id);
+    const [issue] = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, conversation!.issueId));
+    expect(issue!.sourceTrust).toMatchObject({ disposition: "quarantined" });
+    await vi.advanceTimersByTimeAsync(12_000);
+    await service.flushTyping();
+    expect(runtime.endpoints.get(endpoint.id)!.typing).toEqual([]);
+    expect(thread.startTyping).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it.each(["codex_local", "claude_local", "hermes_gateway"])(
+    "refreshes admitted Telegram typing for %s and settles every terminal outcome",
+    async (adapterType) => {
+      onTestFinished(() => vi.useRealTimers());
+      const fixture = await seedCompany();
+      await db
+        .update(agents)
+        .set({ adapterType })
+        .where(eq(agents.id, fixture.assignedAgentId));
+      let heldConversation: string | null = null;
+      let signalProbe!: () => void;
+      let releaseProbe!: () => void;
+      let probeReached = Promise.resolve();
+      let probeReleased = Promise.resolve();
+      const { callbacks, endpoint, runtime, service } =
+        await configuredTelegramEndpoint(fixture, {
+          typingProbeReadBarrier: async (conversationId) => {
+            if (heldConversation !== conversationId) return;
+            signalProbe();
+            await probeReleased;
+          },
+        });
+      await db
+        .update(chatEndpoints)
+        .set({ status: "active" })
+        .where(eq(chatEndpoints.id, endpoint.id));
+      const currentEndpoint = await service.get(endpoint.id);
+      const [principal] = await db
+        .insert(chatExternalPrincipals)
+        .values({
+          companyId: fixture.companyId,
+          provider: "telegram",
+          providerAccountId: currentEndpoint.providerAccountId!,
+          externalId: "typing-user",
+          kind: "user",
+        })
+        .returning();
+      await db.insert(chatIdentityLinks).values({
+        companyId: fixture.companyId,
+        endpointId: endpoint.id,
+        principalId: principal!.id,
+        paperclipUserId: "owner-user",
+        status: "linked",
+        confirmedAt: new Date(),
+      });
+      const chatId = "-10077112813";
+      await db.insert(chatEndpointResources).values({
+        companyId: fixture.companyId,
+        endpointId: endpoint.id,
+        type: "chat",
+        providerResourceId: chatId,
+        label: "Typing forum",
+        availability: "available",
+        enabled: true,
+      });
+      const group = makeThread({
+        channelId: chatId,
+        id: `telegram:${chatId}:12813`,
+        name: "Typing topic",
+      });
+      const providerRuntime = runtime.endpoints.get(endpoint.id)!;
+      for (const [index, outcome] of [
+        "reply",
+        "NO_REPLY",
+        "failed",
+        "cancelled",
+        "timed_out",
+        "quarantined",
+        "revoked",
+        "delivery_unknown",
+        "awaiting_consent",
+        "missing_reply",
+        "missing_finished_at",
+        "lock_free",
+        "shutdown",
+      ].entries()) {
+        const providerMessageId = `${chatId}:${index + 1}`;
+        vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+        await deliverMessage({
+          callbacks,
+          endpointId: endpoint.id,
+          provider: "telegram",
+          thread: group.thread,
+          message: makeMessage({
+            id: providerMessageId,
+            text: "@maya please check",
+            userId: "typing-user",
+            mentioned: true,
+          }),
+          trigger: "mention",
+        });
+        const conversation = (await service.listConversations(endpoint.id)).find((row) => row.externalThreadId === group.thread.id);
+        const context = await chatWakeContext({
+          endpointId: endpoint.id,
+          issueId: conversation!.issueId,
+          provider: "telegram",
+          providerMessageId,
+        });
+        const [action] = await db
+          .select()
+          .from(chatActions)
+          .where(
+            and(
+              eq(chatActions.endpointId, endpoint.id),
+              eq(chatActions.kind, "inbound_wakeup"),
+              eq(
+                sql<string>`${chatActions.payload}->>'commentId'`,
+                context.wakeCommentId!,
+              ),
+            ),
+          );
+        const runId = randomUUID();
+        await db.insert(heartbeatRuns).values({
+          id: runId,
+          companyId: fixture.companyId,
+          agentId: endpoint.assignedAgentId,
+          status: "running",
+          wakeupRequestId: action!.id,
+          contextSnapshot: context,
+          resultJson: {
+            presentationDecision: {
+              chosenSource: "final_agent_message",
+              commentAction: "create",
+              reasonCodes: [],
+            },
+          },
+        });
+        await db
+          .update(agentWakeupRequests)
+          .set({ runId, status: "claimed" })
+          .where(eq(agentWakeupRequests.id, action!.id));
+        const beforeRefresh = providerRuntime.typing.length;
+        expect(beforeRefresh).toBeGreaterThan(0);
+        await vi.advanceTimersByTimeAsync(4_000);
+        await service.flushTyping();
+        expect(providerRuntime.typing.length).toBeGreaterThan(beforeRefresh);
+        expect(providerRuntime.typing.at(-1)).toBe(group.thread.id);
+        if (outcome === "shutdown") await service.shutdown();
+        else if (outcome === "reply" || outcome === "NO_REPLY") {
+          // Keep the successful run's typing alive through delayed publication.
+          await db
+            .update(heartbeatRuns)
+            .set({ status: "succeeded", finishedAt: new Date() })
+            .where(eq(heartbeatRuns.id, runId));
+          const beforeOutbox = providerRuntime.typing.length;
+          await vi.advanceTimersByTimeAsync(4_000);
+          await service.flushTyping();
+          expect(providerRuntime.typing.length).toBe(beforeOutbox + 1);
+          await addSelectedChatFinal({
+            agentId: endpoint.assignedAgentId,
+            body: outcome === "reply" ? "Checked." : "NO_REPLY",
+            companyId: fixture.companyId,
+            issueId: conversation!.issueId,
+            runId,
+          });
+          const pendingCount = providerRuntime.typing.length;
+          await vi.advanceTimersByTimeAsync(4_000);
+          await service.flushTyping();
+          expect(providerRuntime.typing.length).toBe(
+            pendingCount + (outcome === "reply" ? 1 : 0),
+          );
+          await service.processPendingPublications();
+        } else if (
+          outcome === "delivery_unknown" ||
+          outcome === "awaiting_consent"
+        ) {
+          await db
+            .update(heartbeatRuns)
+            .set({ status: "succeeded", finishedAt: new Date() })
+            .where(eq(heartbeatRuns.id, runId));
+          await addSelectedChatFinal({
+            agentId: endpoint.assignedAgentId,
+            body: "Reply awaiting delivery.",
+            companyId: fixture.companyId,
+            issueId: conversation!.issueId,
+            runId,
+          });
+          await db
+            .update(chatPublications)
+            .set({ state: outcome })
+            .where(
+              and(
+                eq(chatPublications.conversationId, conversation!.id),
+                inArray(
+                  chatPublications.commentId,
+                  db
+                    .select({ id: issueComments.id })
+                    .from(issueComments)
+                    .where(eq(issueComments.createdByRunId, runId)),
+                ),
+              ),
+            );
+        } else if (
+          outcome === "missing_reply" ||
+          outcome === "missing_finished_at"
+        ) {
+          await db
+            .update(heartbeatRuns)
+            .set({
+              status: "succeeded",
+              finishedAt: outcome === "missing_reply" ? new Date() : null,
+            })
+            .where(eq(heartbeatRuns.id, runId));
+          if (outcome === "missing_reply") {
+            await vi.advanceTimersByTimeAsync(4_000);
+            await service.flushTyping();
+            expect(providerRuntime.typing.length).toBe(beforeRefresh + 2);
+            // Beyond the one-minute post-success grace, a promised but absent
+            // outbox row cannot keep the conversation alive.
+            await vi.advanceTimersByTimeAsync(60_000);
+            await service.flushTyping();
+          }
+        } else if (outcome === "lock_free") {
+          const beforeLockedRefresh = providerRuntime.typing.length;
+          await db.transaction(async (tx) => {
+            await tx
+              .select()
+              .from(chatEndpoints)
+              .where(eq(chatEndpoints.id, endpoint.id))
+              .for("no key update");
+            await vi.advanceTimersByTimeAsync(4_000);
+            await service.flushTyping();
+            expect(providerRuntime.typing.length).toBe(beforeLockedRefresh + 1);
+          });
+          probeReached = new Promise<void>((resolve) => {
+            signalProbe = resolve;
+          });
+          probeReleased = new Promise<void>((resolve) => {
+            releaseProbe = resolve;
+          });
+          heldConversation = conversation!.id;
+          await vi.advanceTimersByTimeAsync(4_000);
+          await probeReached;
+          const other = makeThread({
+            channelId: chatId,
+            id: `telegram:${chatId}:1269`,
+            name: "Concurrent typing intake",
+          });
+          const intake = deliverMessage({
+            callbacks,
+            endpointId: endpoint.id,
+            provider: "telegram",
+            thread: other.thread,
+            message: makeMessage({
+              id: `${chatId}:100`,
+              text: "@maya concurrent request",
+              userId: "typing-user",
+              mentioned: true,
+            }),
+            trigger: "mention",
+          });
+          let timeout: ReturnType<typeof setTimeout> | undefined;
+          try {
+            await Promise.race([
+              intake,
+              new Promise<void>((_, reject) => {
+                timeout = setTimeout(
+                  () =>
+                    reject(new Error("Typing refresh blocked concurrent intake")),
+                  2_000,
+                );
+              }),
+            ]);
+            const [delivery] = await db
+              .select()
+              .from(chatDeliveries)
+              .where(
+                eq(
+                  chatDeliveries.providerEventId,
+                  `${other.thread.id}:${chatId}:100`,
+                ),
+              );
+            expect(delivery?.state).toBe("processed");
+            const [wake] = await db
+              .select()
+              .from(chatActions)
+              .where(
+                and(
+                  eq(chatActions.deliveryId, delivery!.id),
+                  eq(chatActions.kind, "inbound_wakeup"),
+                ),
+              );
+            expect(wake?.status).toBe("processed");
+          } finally {
+            clearTimeout(timeout);
+            heldConversation = null;
+            releaseProbe();
+            await Promise.allSettled([intake, service.flushTyping()]);
+          }
+          // Retire the second conversation, then end the original run so the
+          // common stop assertion measures this run alone.
+          await db
+            .update(chatConversations)
+            .set({ state: "completed" })
+            .where(
+              and(
+                eq(chatConversations.endpointId, endpoint.id),
+                eq(chatConversations.externalThreadId, other.thread.id),
+              ),
+            );
+          await db
+            .update(heartbeatRuns)
+            .set({ status: "cancelled" })
+            .where(eq(heartbeatRuns.id, runId));
+        } else if (outcome === "quarantined") {
+          await db
+            .update(issues)
+            .set({
+              sourceTrust: {
+                preset: "low_trust_review",
+                disposition: "quarantined",
+                sourceIssueId: conversation!.issueId,
+              },
+            })
+            .where(eq(issues.id, conversation!.issueId));
+        } else if (outcome === "revoked") {
+          await db
+            .update(chatIdentityLinks)
+            .set({ status: "revoked" })
+            .where(eq(chatIdentityLinks.principalId, principal!.id));
+        } else
+          await db
+            .update(heartbeatRuns)
+            .set({ status: outcome })
+            .where(eq(heartbeatRuns.id, runId));
+        const settled = providerRuntime.typing.length;
+        await vi.advanceTimersByTimeAsync(4_000);
+        await service.flushTyping();
+        expect(providerRuntime.typing).toHaveLength(settled);
+        await db
+          .update(issues)
+          .set({ sourceTrust: null })
+          .where(eq(issues.id, conversation!.issueId));
+        await db
+          .update(chatIdentityLinks)
+          .set({ status: "linked" })
+          .where(eq(chatIdentityLinks.principalId, principal!.id));
+        vi.useRealTimers();
+      }
+    },
+    90_000,
+  );
 
   it.each(["codex_local", "hermes_gateway"])("relays %s live tool activity per run, masks secrets, and deletes it for NO_REPLY", async (adapterType) => {
     const fixture = await seedCompany();

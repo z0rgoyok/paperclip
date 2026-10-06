@@ -1,3 +1,4 @@
+import { CHAT_TYPING_SUCCESS_GRACE_MS, ChatTypingRelay } from "./chat-typing.js";
 import { withSlackBoardLease } from "./slack-board-lease.js";
 import { mirrorSlackBoardComment, slackBoardReplyBindings } from "./slack-board-messages.js";
 import { authorizeSlackBoardPublication } from "./slack-board-authority.js";
@@ -1466,6 +1467,8 @@ export interface ChatChannelServiceOptions {
   fetch?: typeof globalThis.fetch;
   /** Test override for the tool activity message's minimum edit spacing. */
   toolActivityMinEditIntervalMs?: number;
+  /** Test seam after the read-only typing snapshot; never invoked by intake. */
+  typingProbeReadBarrier?: (conversationId: string) => Promise<void>;
   /** Test-only private upload transport; production retains guarded egress. */
   teamsFileUploadRequest?: TeamsFileTransferOptions["uploadRequest"];
   heartbeat: IssueAssignmentWakeupDeps & {
@@ -5580,17 +5583,19 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     endpointId: string,
     context: LifecycleRuntimeFence,
     allowedStatuses: EndpointRow["status"][],
+    readOnly = false,
   ): Promise<EndpointRow | null> {
-    const endpoint = await tx
+    const endpointQuery = tx
       .select()
       .from(chatEndpoints)
-      .where(eq(chatEndpoints.id, endpointId))
-      // Serialize endpoint mutations without taking the stronger row lock
-      // that conflicts with the Chat SDK state table's endpoint foreign-key
-      // check. FOR UPDATE can self-deadlock an SDK-state write performed by a
-      // provider callback on another pooled connection.
-      .for("no key update")
-      .then((rows) => rows[0] ?? null);
+      .where(eq(chatEndpoints.id, endpointId));
+    // Serialize endpoint mutations without taking the stronger row lock
+    // that conflicts with the Chat SDK state table's endpoint foreign-key
+    // check. FOR UPDATE can self-deadlock an SDK-state write performed by a
+    // provider callback on another pooled connection.
+    const endpoint = await (
+      readOnly ? endpointQuery : endpointQuery.for("no key update")
+    ).then((rows) => rows[0] ?? null);
     if (
       !endpoint ||
       !allowedStatuses.includes(endpoint.status) ||
@@ -10402,22 +10407,28 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     tx: DbOrTransaction,
     endpoint: EndpointRow,
     principalId: string,
+    readOnly = false,
   ): Promise<{
     allowed: boolean;
     linkedDenied: boolean;
     userId: string | null;
     sponsorUserId?: string | null;
   }> {
-    const githubAccess = await githubChatPrincipalAccess(tx, endpoint, principalId);
+    const githubAccess = await githubChatPrincipalAccess(
+      tx,
+      endpoint,
+      principalId,
+    );
     if (githubAccess) return githubAccess;
     // Link confirmation already uses this transaction-scoped identity key.
     // Taking it at the final task mutation boundary prevents a newly confirmed
     // identity from racing the authorization snapshot. Row locks below also
     // serialize revocation and membership changes that do not use this key.
-    await tx.execute(
-      sql`select pg_advisory_xact_lock(hashtextextended(${`chat-identity:${endpoint.companyId}:${principalId}`}, 0))`,
-    );
-    const link = await tx
+    if (!readOnly)
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${`chat-identity:${endpoint.companyId}:${principalId}`}, 0))`,
+      );
+    const linkQuery = tx
       .select({
         status: chatIdentityLinks.status,
         userId: chatIdentityLinks.paperclipUserId,
@@ -10429,14 +10440,15 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           eq(chatIdentityLinks.endpointId, endpoint.id),
           eq(chatIdentityLinks.principalId, principalId),
         ),
-      )
-      .for("update")
-      .then((rows) => rows[0] ?? null);
+      );
+    const link = await (readOnly ? linkQuery : linkQuery.for("update")).then(
+      (rows) => rows[0] ?? null,
+    );
     if (link?.status === "linked") {
       if (!link.userId) {
         return { allowed: false, linkedDenied: true, userId: null };
       }
-      const membership = await tx
+      const membershipQuery = tx
         .select({
           status: companyMemberships.status,
           membershipRole: companyMemberships.membershipRole,
@@ -10448,12 +10460,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             eq(companyMemberships.principalType, "user"),
             eq(companyMemberships.principalId, link.userId),
           ),
-        )
-        .for("update")
-        .then((rows) => rows[0] ?? null);
+        );
+      const membership = await (
+        readOnly ? membershipQuery : membershipQuery.for("update")
+      ).then((rows) => rows[0] ?? null);
       const allowed =
-        membership?.status === "active" &&
-        membership.membershipRole !== "viewer";
+        membership?.status === "active" && membership.membershipRole !== "viewer";
       return {
         allowed,
         linkedDenied: !allowed,
@@ -10466,7 +10478,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     if (!endpoint.sponsorUserId) {
       return { allowed: true, linkedDenied: false, userId: null };
     }
-    const sponsorMembership = await tx
+    const sponsorMembershipQuery = tx
       .select({
         status: companyMemberships.status,
         membershipRole: companyMemberships.membershipRole,
@@ -10478,9 +10490,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           eq(companyMemberships.principalType, "user"),
           eq(companyMemberships.principalId, endpoint.sponsorUserId),
         ),
-      )
-      .for("update")
-      .then((rows) => rows[0] ?? null);
+      );
+    const sponsorMembership = await (
+      readOnly ? sponsorMembershipQuery : sponsorMembershipQuery.for("update")
+    ).then((rows) => rows[0] ?? null);
     return {
       allowed:
         sponsorMembership?.status === "active" &&
@@ -11684,8 +11697,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   async function authorizeInboundWakeup(
     tx: DbOrTransaction,
     action: typeof chatActions.$inferSelect,
-    notice?: { nonblocking: true; terminal: boolean },
+    notice?: { nonblocking?: true; terminal: boolean; readOnly?: true },
   ) {
+    const readOnly = notice?.readOnly === true;
     const payload = action.payload;
     const deny = () =>
       forbidden(
@@ -11704,7 +11718,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       typeof payload.requestedByActorId !== "string"
     )
       throw deny();
-    const issue = await tx
+    const issueQuery = tx
       .select()
       .from(issues)
       .where(
@@ -11712,8 +11726,15 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           eq(issues.companyId, action.companyId),
           eq(issues.id, payload.issueId),
         ),
-      )
-      .for("update", notice ? { noWait: true } : undefined)
+      );
+    const issue = await (
+      readOnly
+        ? issueQuery
+        : issueQuery.for(
+            "update",
+            notice?.nonblocking ? { noWait: true } : undefined,
+          )
+    )
       .limit(1)
       .then((rows) => rows[0] ?? null);
     if (
@@ -11725,7 +11746,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       throw deny();
     // The scheduler already owns the issue lock. Do not wait in the opposite
     // order behind an ingress transaction which owns the endpoint first.
-    const endpoint = await tx
+    const endpointQuery = tx
       .select()
       .from(chatEndpoints)
       .where(
@@ -11733,8 +11754,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           eq(chatEndpoints.companyId, action.companyId),
           eq(chatEndpoints.id, action.endpointId),
         ),
-      )
-      .for("no key update", { noWait: true })
+      );
+    const endpoint = await (
+      readOnly
+        ? endpointQuery
+        : endpointQuery.for("no key update", { noWait: true })
+    )
       .limit(1)
       .then((rows) => rows[0] ?? null);
     const delivery = await tx
@@ -11751,6 +11776,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     const fence = delivery ? lifecycleRuntimeFence(delivery) : null;
     if (
       !endpoint ||
+      (readOnly && endpoint.provider !== "telegram") ||
       endpoint.assignedAgentId !== payload.agentId ||
       !delivery ||
       telegramDeliveryHasZeroMessageId(delivery, endpoint.provider) ||
@@ -11758,13 +11784,16 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       delivery.conversationId !== action.conversationId ||
       delivery.principalId !== action.principalId ||
       !fence ||
-      !(await runtimeCallbackEndpoint(tx as DbTransaction, endpoint.id, fence, [
-        "verifying",
-        "active",
-      ]))
+      !(await runtimeCallbackEndpoint(
+        tx as DbTransaction,
+        endpoint.id,
+        fence,
+        ["verifying", "active"],
+        readOnly,
+      ))
     )
       throw deny();
-    const conversation = await tx
+    const conversationQuery = tx
       .select()
       .from(chatConversations)
       .where(
@@ -11772,8 +11801,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           eq(chatConversations.companyId, action.companyId),
           eq(chatConversations.id, action.conversationId),
         ),
-      )
-      .for("update")
+      );
+    const conversation = await (
+      readOnly ? conversationQuery : conversationQuery.for("update")
+    )
       .limit(1)
       .then((rows) => rows[0] ?? null);
     if (
@@ -11784,17 +11815,14 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       !["active", "waiting"].includes(conversation.state)
     )
       throw deny();
-    const resource = conversation.resourceId
-      ? await tx
-          .select()
-          .from(chatEndpointResources)
-          .where(
-            and(
-              eq(chatEndpointResources.endpointId, endpoint.id),
-              eq(chatEndpointResources.id, conversation.resourceId),
-            ),
-          )
-          .for("update")
+    const resourceQuery = conversation.resourceId
+      ? tx.select().from(chatEndpointResources).where(and(
+          eq(chatEndpointResources.endpointId, endpoint.id),
+          eq(chatEndpointResources.id, conversation.resourceId),
+        ))
+      : null;
+    const resource = resourceQuery
+      ? await (readOnly ? resourceQuery : resourceQuery.for("update"))
           .limit(1)
           .then((rows) => rows[0] ?? null)
       : null;
@@ -11802,17 +11830,22 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       tx,
       endpoint,
       action.principalId,
+      readOnly,
     );
-    const automatic = delivery.normalizedEvent.githubAutomatic as { context: GitHubReviewEventContext } | undefined;
+    const automatic = delivery.normalizedEvent.githubAutomatic as
+      | { context: GitHubReviewEventContext }
+      | undefined;
     if (endpoint.provider === "github" && automatic) {
-      const admission = await githubAutomaticAdmission(tx, endpoint, automatic.context);
+      const admission = await githubAutomaticAdmission(
+        tx,
+        endpoint,
+        automatic.context,
+      );
       if (!admission?.allowed) throw deny();
       authorization.userId = admission.responsibleUserId ?? null;
     }
     const expectedUserId =
-      payload.requestedByActorType === "user"
-        ? payload.requestedByActorId
-        : null;
+      payload.requestedByActorType === "user" ? payload.requestedByActorId : null;
     if (
       !(conversation.isDirectMessage
         ? endpoint.allowDirectMessages
@@ -15469,7 +15502,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         await acceptInboundWakeup(activeDelivery.id, attachmentResult);
         if (!(await processInboundWakeup(activeDelivery.id))) return;
         const acceptedWake = await db
-          .select({ status: chatActions.status })
+          .select({ action: chatActions })
           .from(chatActions)
           .where(
             and(
@@ -15479,7 +15512,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           )
           .limit(1)
           .then((rows) => rows[0] ?? null);
-        if (acceptedWake?.status !== "processed") return;
+        if (acceptedWake?.action.status !== "processed") return;
         // Recover the visible receipt as well as the durable wake. The
         // receipt action is idempotent and resolves the current runtime fence.
         await Promise.allSettled([
@@ -15494,7 +15527,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             : Promise.resolve(),
           endpoint.provider === "slack"
             ? Promise.resolve()
-            : thread.startTyping("Working…"),
+            : endpoint.provider === "telegram"
+              ? typing.start(acceptedWake.action as TelegramTypingSource)
+              : thread.startTyping("Working…"),
         ]);
         return;
       }
@@ -16590,7 +16625,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       await acceptInboundWakeup(activeDelivery.id, attachmentResult);
       if (!(await processInboundWakeup(activeDelivery.id))) return;
       const acceptedWake = await db
-        .select({ status: chatActions.status })
+        .select({ action: chatActions })
         .from(chatActions)
         .where(
           and(
@@ -16600,7 +16635,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         )
         .limit(1)
         .then((rows) => rows[0] ?? null);
-      if (acceptedWake?.status !== "processed") return;
+      if (acceptedWake?.action.status !== "processed") return;
       // Provider-visible acknowledgement begins only after the task, external
       // comment, durable wakeup request, delivery state, and message link commit.
       await Promise.allSettled([
@@ -16619,7 +16654,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         // reply below is the visible working state instead.
         endpoint.provider === "slack"
           ? Promise.resolve()
-          : thread.startTyping("Working…"),
+          : endpoint.provider === "telegram"
+            ? typing.start(acceptedWake.action as TelegramTypingSource)
+            : thread.startTyping("Working…"),
       ]);
     } catch (error) {
       const providerEffectAmbiguous =
@@ -37352,6 +37389,165 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     }
   }
 
+  type TelegramTypingSource = typeof chatActions.$inferSelect & {
+    conversationId: string;
+  };
+
+  const typing = new ChatTypingRelay<TelegramTypingSource>({
+    isActive: async (action) => {
+      if (shuttingDown) return false;
+      try {
+        return await db.transaction(
+          async (tx) => {
+            // Reuse intake authority: blocked/quarantined senders, revoked access,
+            // reset conversations, disabled destinations and retired runtimes fail closed.
+            const context = await authorizeInboundWakeup(tx, action, {
+              readOnly: true,
+              terminal: false,
+            });
+            if (
+              context.endpoint.provider !== "telegram" ||
+              context.endpoint.publicationMode !== "automatic" ||
+              action.payload.requestedByActorType !== "user" ||
+              context.issue.sourceTrust?.disposition === "quarantined"
+            )
+              return false;
+            await options.typingProbeReadBarrier?.(action.conversationId);
+            const [receipt] = await tx
+              .select()
+              .from(agentWakeupRequests)
+              .where(
+                and(
+                  eq(agentWakeupRequests.id, action.id),
+                  eq(agentWakeupRequests.companyId, action.companyId),
+                ),
+              );
+            if (
+              !receipt ||
+              ["skipped", "failed", "cancelled"].includes(receipt.status)
+            )
+              return false;
+            const ownerId = receipt.payload?.coalescedIntoWakeupRequestId;
+            const [owner] =
+              typeof ownerId === "string" && isUuidLike(ownerId)
+                ? await tx
+                    .select()
+                    .from(agentWakeupRequests)
+                    .where(
+                      and(
+                        eq(agentWakeupRequests.id, ownerId),
+                        eq(agentWakeupRequests.companyId, action.companyId),
+                        eq(
+                          agentWakeupRequests.agentId,
+                          String(action.payload.agentId),
+                        ),
+                      ),
+                    )
+                : [receipt];
+            if (
+              !owner ||
+              ["skipped", "failed", "cancelled"].includes(owner.status)
+            )
+              return false;
+            if (!owner.runId)
+              return ["queued", "deferred_issue_execution"].includes(
+                owner.status,
+              );
+            const [run] = await tx
+              .select()
+              .from(heartbeatRuns)
+              .where(
+                and(
+                  eq(heartbeatRuns.id, owner.runId),
+                  eq(heartbeatRuns.companyId, action.companyId),
+                  eq(heartbeatRuns.agentId, String(action.payload.agentId)),
+                ),
+              );
+            if (
+              !run ||
+              ["failed", "cancelled", "timed_out", "interrupted"].includes(
+                run.status,
+              )
+            )
+              return false;
+            const replies = await tx
+              .select({
+                state: chatPublications.state,
+                payload: chatPublications.payload,
+              })
+              .from(chatPublications)
+              .innerJoin(
+                issueComments,
+                and(
+                  eq(issueComments.id, chatPublications.commentId),
+                  eq(issueComments.companyId, action.companyId),
+                  eq(issueComments.createdByRunId, run.id),
+                ),
+              )
+              .where(
+                and(
+                  eq(chatPublications.companyId, action.companyId),
+                  eq(chatPublications.endpointId, action.endpointId),
+                  eq(chatPublications.conversationId, action.conversationId),
+                  sql`${chatPublications.payload}->>'progressState' is null`,
+                ),
+              );
+            if (
+              replies.some(
+                (reply) =>
+                  ["published", "cancelled", "failed"].includes(reply.state) ||
+                  isSilentChatReplyPayload(reply.payload),
+              )
+            )
+              return false;
+            // Reply states form a closed allowlist, including while the run is
+            // still active. Quarantined or future states cannot keep typing alive.
+            if (replies.length > 0)
+              return replies.some((reply) =>
+                ["pending", "retry", "streaming"].includes(reply.state),
+              );
+            if (["queued", "running", "scheduled_retry"].includes(run.status))
+              return true;
+            const presentation = run.resultJson?.presentationDecision as
+              | Record<string, unknown>
+              | undefined;
+            return (
+              run.status === "succeeded" &&
+              presentation?.commentAction === "create" &&
+              run.finishedAt !== null &&
+              Date.now() - run.finishedAt.getTime() < CHAT_TYPING_SUCCESS_GRACE_MS
+            );
+          },
+          { accessMode: "read only", isolationLevel: "repeatable read" },
+        );
+      } catch (error) {
+        if (isExternalActionAuthorizationChange(error)) return false;
+        throw error;
+      }
+    },
+    send: async (action) => {
+      const record = await endpointRecord(action.endpointId);
+      if (!record) return;
+      const endpointRuntime = await runtimeFor(record.endpoint);
+      const conversation = await db
+        .select({ threadId: chatConversations.externalThreadId })
+        .from(chatConversations)
+        .where(
+          and(
+            eq(chatConversations.id, action.conversationId),
+            eq(chatConversations.endpointId, action.endpointId),
+          ),
+        )
+        .then((rows) => rows[0]);
+      if (conversation)
+        await endpointRuntime
+          .thread(conversation.threadId)
+          .startTyping("Working…");
+    },
+    onError: (error) =>
+      logger.warn({ error: redactError(error) }, "Chat typing refresh failed"),
+  });
+
   type ToolActivityDestination = {
     conversationId: string;
     endpointId: string;
@@ -37539,6 +37735,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         runtimeContext: runtimeContextForRecord(record),
       });
     });
+    await typing.settle(publication.conversationId);
     for (const actionId of receiptRemovalActionIds)
       scheduleMessageProcessing(() => processReceiptReaction(actionId));
     return true;
@@ -38219,6 +38416,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 );
                 await credentialLease.assertOwned(tx);
               });
+              await typing.settle(publication.conversationId);
               // Receipt cleanup is non-critical provider I/O. Dispatch it
               // after the terminal reply and durable action commit so a
               // slow reaction endpoint cannot hold the publication lane.
@@ -38852,9 +39050,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     observeRunOutput: (chunk: RunOutputChunk) => toolActivity.observe(chunk),
     /** Test helper: process queued output and send pending activity edits. */
     flushToolActivity: () => toolActivity.flush(),
+    /** Test helper: await in-flight typing checks and provider actions. */
+    flushTyping: () => typing.flush(),
     shutdown: async () => {
       shuttingDown = true;
       toolActivity.dispose();
+      await typing.dispose();
       await Promise.allSettled([...failedRetryTasks.values()]);
       unregisterFailedRetryAuthority();
       unregisterSlackTaskAuthority();

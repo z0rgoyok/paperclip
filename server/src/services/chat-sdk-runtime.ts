@@ -1492,6 +1492,7 @@ function createProviderAdapter(
       };
       const adapter = createTelegramAdapter(adapterConfig);
       const parser = adapter as unknown as {
+        startTypingForPrivateMessage(): void;
         extractAttachments(raw: TelegramRawMessage): Attachment[];
         parseTelegramMessage(
           raw: TelegramRawMessage,
@@ -1511,6 +1512,10 @@ function createProviderAdapter(
       ) {
         throw new Error("Telegram attachment parser contract is unavailable");
       }
+      // The SDK otherwise acknowledges every private message before Paperclip
+      // admits its sender. Typing belongs to the accepted wake/run lifecycle,
+      // including its quarantine and publication boundaries.
+      parser.startTypingForPrivateMessage = () => {};
       const extractAttachments = parser.extractAttachments.bind(adapter);
       const create = (
         type: Attachment["type"],
