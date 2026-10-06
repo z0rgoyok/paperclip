@@ -25,6 +25,7 @@ import {
   isRemotePlainHttp,
   remotePlainHttpDeniedMessage,
 } from "./transport-security.js";
+import { registerSteeringRun } from "./steering.js";
 
 type SessionKeyStrategy = "issue" | "agent" | "run" | "none";
 
@@ -903,6 +904,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   await ctx.onLog("stdout", `[hermes-gateway] run created: ${runId}\n`);
 
   const state = createExecutionState(runId);
+  const finishSteering = registerSteeringRun(ctx.runId, {
+    companyId: ctx.agent.companyId,
+    agentId: ctx.agent.id,
+    issueId: issueIdFromContext(ctx) ?? "",
+  }, async (text) => {
+    if (state.terminal) return false;
+    const ack = asRecord(await fetchJson(apiUrl(baseUrl, `/v1/runs/${encodeURIComponent(runId!)}/steer`), {
+      method: "POST",
+      headers: runHeaders,
+      body: JSON.stringify({ input: text }),
+      signal: AbortSignal.timeout(5_000),
+    }));
+    return ack?.accepted === true && ack.run_id === runId;
+  });
   const controller = new AbortController();
   void consumeEvents({
     ctx,
@@ -936,6 +951,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (outcome === "timeout") {
     await stopRun({ ctx, baseUrl, headers: eventHeaders, runId, redactText });
     const finalStatus = await fetchFinalStatus({ baseUrl, headers: eventHeaders, runId, deadlineMs: STOP_GRACE_MS });
+    const pendingSteeringDeliveryIds = await finishSteering(finalStatus?.pending_steer, finalStatus === null);
     return {
       exitCode: 1,
       signal: null,
@@ -945,6 +961,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       provider: "hermes_gateway",
       resultJson: {
         run_id: runId,
+        pendingSteeringDeliveryIds,
         status: extractStatus(finalStatus) ?? "timeout",
         last_event: state.lastEventName,
         final_status: redactForLog(finalStatus, [], 0, redactText),
@@ -957,11 +974,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   }
 
-  return mapFinalResultForTest({
+  const pendingSteeringDeliveryIds = await finishSteering(outcome.payload?.pending_steer);
+  const result = mapFinalResultForTest({
     terminal: outcome,
     outputChunks: state.outputChunks,
     sessionKey,
     strategy,
     redactText,
   });
+  result.resultJson = { ...result.resultJson, pendingSteeringDeliveryIds };
+  return result;
 }

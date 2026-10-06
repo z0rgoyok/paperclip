@@ -1,6 +1,6 @@
 import type { AdapterSessionManagement, ServerAdapterModule } from "@paperclipai/adapter-utils";
 import { ADAPTER_LABEL, ADAPTER_TYPE } from "./shared/constants.js";
-import { execute, getConfigSchema, sessionCodec, testEnvironment } from "./server/index.js";
+import { execute, getConfigSchema, sessionCodec, steering, testEnvironment } from "./server/index.js";
 
 export const type = ADAPTER_TYPE;
 export const label = ADAPTER_LABEL;
@@ -49,6 +49,9 @@ Runtime mapping:
 - Sends Idempotency-Key equal to the Paperclip run id for correlation only; Hermes v0.16.0 did not dedupe duplicate creates.
 - Streams GET /v1/runs/{run_id}/events and polls GET /v1/runs/{run_id} as fallback.
 - Calls POST /v1/runs/{run_id}/stop on timeout.
+- Steers admitted chat input into an active run with POST /v1/runs/{run_id}/steer.
+  Requires the same company, agent, issue and requesting principal; fresh-session input queues normally.
+  Errors or missing live ownership use the ordinary queue. Terminal pending_steer input is queued for follow-up.
 
 Security guidance:
 - Prefer HTTPS or a private overlay network for non-loopback hosts.
@@ -59,6 +62,7 @@ Security guidance:
 export function createServerAdapter(): ServerAdapterModule {
   return {
     type,
+    steering,
     execute,
     testEnvironment,
     sessionCodec,

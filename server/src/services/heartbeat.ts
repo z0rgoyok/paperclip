@@ -12,6 +12,7 @@ import {
 import { toolActionDeliveryService } from "./tool-action-delivery.js";
 import { githubBotConnectionIdsForRun } from "./chat-github-tools.js";
 import { readQueuedInteractionResponse } from "./queued-interaction-response.js";
+import { steerAdapterChatMessage, restorePendingAdapterSteering } from "./adapter-chat-steering.js";
 import { AGENT_CHAT_DIRECTIVE, conversationReplay, isConversation, isConversationExecutionWake, isWaitingConversation, prepareConversationTurn, settleConversationTurn } from "./agent-conversations.js";
 import { PROCESS_IDENTITY_RECORDED, recordNativeLocalProcessStop } from "./native-local-process-stop.js";
 import { hasAcknowledgedNativeReassignmentStopIntent, hasAcknowledgedNativeStopIntent, isAcknowledgedNativeStop, acknowledgedNativeStopExecutionHasStopped } from "./acknowledged-native-stop.js";
@@ -26162,6 +26163,7 @@ export function heartbeatService(
     options: { suppressImmediateRecovery?: boolean } = {},
   ) {
     try {
+      await restorePendingAdapterSteering(db, run.companyId, run.id);
       const { postCommitEffects } = await wakeQueue.releaseIssueExecution({
         companyId: run.companyId,
         runId: run.id,
@@ -27718,6 +27720,19 @@ export function heartbeatService(
             // its fresh-session contract into unrelated work or create a second
             // deferred wake that could later replay the same reconciliation.
             if (reconciledSourceRunId) return { kind: "deferred" as const };
+
+            if (durableRequest && activeExecutionRun.agentId === agentId &&
+                issue.assigneeAgentId === agentId && !failedChatRetry) {
+              const steered = await steerAdapterChatMessage({
+                tx: tx as unknown as Db,
+                adapter: getServerAdapter(agent.adapterType),
+                request: durableRequest,
+                activeRunId: activeExecutionRun.id,
+                source, triggerDetail, reason,
+                payload: payload ?? {}, context: enrichedContextSnapshot,
+              });
+              if (steered) return { kind: "replayed" as const, run: steered };
+            }
 
             const admissionScope = wakeQueue.createAdmissionTransactionScope(
               agent.companyId,

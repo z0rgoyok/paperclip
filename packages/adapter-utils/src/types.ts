@@ -452,6 +452,17 @@ export interface AcpTargetDescriptor {
 
 export interface ServerAdapterModule {
   type: string;
+  /** Same-turn input on a live invocation owned by this controller. False queues normally. */
+  steering?: {
+    steer(input: {
+      runId: string;
+      companyId: string;
+      agentId: string;
+      issueId: string;
+      deliveryId: string;
+      text: string;
+    }): Promise<boolean>;
+  };
   execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult>;
   testEnvironment(ctx: AdapterEnvironmentTestContext): Promise<AdapterEnvironmentTestResult>;
   acp?: AcpTargetDescriptor;

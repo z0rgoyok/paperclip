@@ -144,6 +144,31 @@ This mode does not start Hermes. It creates runs with `POST /v1/runs`, streams
 Hermes events with SSE, polls run status as a fallback, and stops timed-out runs
 with `POST /v1/runs/{run_id}/stop`.
 
+### Chat input during a gateway run
+
+Paperclip steers an admitted chat message into an active `hermes_gateway` run
+on the same company, agent, issue and requesting principal. The adapter keeps
+the live Hermes run ID and the invocation's resolved credentials in memory,
+then calls `POST /v1/runs/{run_id}/steer` with `{ "input": "..." }`.
+It consumes the durable delivery only after an acknowledgement containing
+`accepted: true` and the matching `run_id`. Fresh-session requests, different
+principals, missing live ownership, unsupported servers, rejected input and
+transport failures use the ordinary deferred queue.
+
+Hermes applies steering after a tool batch. If the turn ends before consuming
+the text, Hermes returns `pending_steer` in its terminal event/status. Paperclip
+restores the corresponding original delivery receipts to the follow-up queue.
+If a timed-out run's final status is unavailable, accepted messages are restored
+conservatively. Steering is process-local: input admitted by another controller
+queues normally. Hermes currently has no idempotency contract for steer requests;
+an accepted request whose acknowledgement is lost can also be queued, so exactly
+once delivery across network failure or process/transaction loss is not guaranteed.
+
+The managed Hermes source at `bf2574d0a199804d1fdb6984d4bb9da9aefcbf94`
+advertises `run_steer` and implements the authenticated, run-owned endpoint in
+`gateway/platforms/api_server_runs.py`. This source check does not establish
+which version an operator's running Hermes server uses.
+
 ### Compatibility with the old gateway package
 
 `@paperclipai/adapter-hermes-gateway` remains as a deprecated compatibility shim
