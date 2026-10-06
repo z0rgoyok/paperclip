@@ -7667,6 +7667,51 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
+  it.each(["confirmed", "unconfirmed", "wrong remote run", "still running", "other adapter"] as const)(
+    "handles embedded Hermes Stop with a %s terminal receipt",
+    async (receipt) => {
+      let context!: { onCancellationReady?: () => Promise<void>; signal?: AbortSignal };
+      mockAdapterExecute.mockImplementationOnce(async (input) => {
+        context = input as typeof context;
+        await context.onCancellationReady?.();
+        await new Promise<void>((resolve) => {
+          if (context.signal?.aborted) resolve();
+          else context.signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+        return {
+          exitCode: 1, signal: "SIGTERM", timedOut: false,
+          errorCode: "hermes_gateway_cancelled", provider: "hermes_gateway",
+          resultJson: {
+            run_id: "hermes-owned-run", remoteStopConfirmed: receipt !== "unconfirmed",
+            final_status: {
+              run_id: receipt === "wrong remote run" ? "another-run" : "hermes-owned-run",
+              status: receipt === "still running" ? "running" : "cancelled",
+            },
+          },
+        };
+      });
+      const { runId } = await seedRunFixture({
+        runtimeMode: "legacy", agentStatus: "idle", runStatus: "queued", includeIssue: false,
+        adapterType: receipt === "other adapter" ? "openclaw_gateway" : "hermes_gateway",
+      });
+      const heartbeat = heartbeatService(db);
+      await heartbeat.resumeQueuedRuns();
+      await vi.waitFor(() => expect(adapterExecutionControls.has(runId)).toBe(true));
+      if (receipt === "confirmed") {
+        expect(await heartbeat.cancelRun(runId)).toMatchObject({
+          status: "cancelled", resultJson: {
+            executionCancellation: { state: "acknowledged", proof: "hermes_terminal_receipt" },
+          },
+        });
+      } else {
+        await expect(heartbeat.cancelRun(runId)).rejects.toThrow("provider termination could not be verified");
+        expect((await heartbeat.getRun(runId))?.resultJson?.executionCancellation).toMatchObject({ state: "requested" });
+      }
+      await heartbeat.drainActiveRunExecutions();
+      expect((await heartbeat.getRun(runId))?.status).toBe("cancelled");
+    },
+  );
+
   it("clears the detached warning when the run reports activity again", async () => {
     const { runId } = await seedRunFixture({
       includeIssue: false,

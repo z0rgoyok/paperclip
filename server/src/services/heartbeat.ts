@@ -25,7 +25,7 @@ import { connectionIntentService } from "./connection-intents.js";
 import { managedAiSessionFingerprintConfig, prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, isAiConnectionBusy, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
 import { aiConnectionBindingSchema } from "@paperclipai/shared";
 import { executionBlockerPredicate, getExecutionBlocker } from "./execution-blocker.js";
-import { CONVERSATION_CONTINUATION_POLICY, claimedAdapterType, runUsedConversationAdapter, hasConversationContinuationPolicy, isConversationAdapter } from "./conversation-continuation.js";
+import { CONVERSATION_CONTINUATION_POLICY, claimedAdapterType, historicalAdapterType, runUsedConversationAdapter, hasConversationContinuationPolicy, isConversationAdapter } from "./conversation-continuation.js";
 import { recordExecutionWait } from "./execution-wait.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-runtime/native-review-participant.js";
 import { claimQueuedNativeReviewRun } from "./native-runtime/native-review-dispatch.js";
@@ -10215,16 +10215,25 @@ export function heartbeatService(
         completeTerminatedRemoteNativeSessionCleanup({ companyId, runId, remoteCleanupScope });
       }
     }
-    if (stopped?.runtimeMode === "legacy" && stopped.status === "cancelled" &&
-        parseObject(stopped.resultJson?.executionCancellation).state === "requested" &&
-        await runUsedConversationAdapter(db, stopped) &&
-        await remoteExecutionHasStopped(db, companyId, runId)) {
+    if (stopped?.runtimeMode !== "legacy" || stopped.status !== "cancelled" ||
+        parseObject(stopped.resultJson?.executionCancellation).state !== "requested") return;
+    const result = parseObject(stopped.resultJson);
+    const finalStatus = parseObject(result.final_status);
+    // Hermes owns its remote run directly, without an environment lease. Only
+    // the adapter's terminal receipt for this exact run can acknowledge Stop.
+    const hermesStopped = await historicalAdapterType(db, stopped) === "hermes_gateway" &&
+      result.remoteStopConfirmed === true && typeof result.run_id === "string" &&
+      result.run_id.length > 0 && finalStatus.run_id === result.run_id &&
+      ["cancelled", "canceled", "stopped", "interrupted", "completed", "failed", "error"].includes(String(finalStatus.status));
+    const conversationStopped = !hermesStopped && await runUsedConversationAdapter(db, stopped) &&
+      await remoteExecutionHasStopped(db, companyId, runId);
+    if (hermesStopped || conversationStopped) {
       await db.update(heartbeatRuns).set({
         resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({
           executionCancellation: { ...parseObject(stopped.resultJson?.executionCancellation),
             state: "acknowledged", acknowledgedAt: new Date().toISOString(),
-            proof: "provider_termination_receipt" },
-          conversationContinuation: CONVERSATION_CONTINUATION_POLICY,
+            proof: hermesStopped ? "hermes_terminal_receipt" : "provider_termination_receipt" },
+          ...(conversationStopped ? { conversationContinuation: CONVERSATION_CONTINUATION_POLICY } : {}),
                  })}::jsonb`,
         updatedAt: new Date(),
       }).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId),
