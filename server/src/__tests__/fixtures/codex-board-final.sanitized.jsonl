@@ -1,0 +1,5 @@
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"[agent text redacted]"}}
+{"type":"item.completed","item":{"id":"item_7","type":"agent_message","text":"[agent text redacted]"}}
+{"type":"item.completed","item":{"id":"item_15","type":"agent_message","text":"[agent text redacted]"}}
+{"type":"item.completed","item":{"id":"item_18","type":"agent_message","text":"Частично готово… [remainder redacted]"}}
+{"type":"turn.completed","usage":{"input_tokens":331819,"cached_input_tokens":274688,"cache_write_input_tokens":0,"output_tokens":7542,"reasoning_output_tokens":1443}}
