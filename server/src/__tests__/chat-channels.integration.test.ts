@@ -1,3 +1,4 @@
+import { parseCodexJsonl } from "@paperclipai/adapter-codex-local/server";
 import { toolActionRequests, toolInvocations } from "@paperclipai/db";
 import { GitHubPublicationLeaseLost, withGitHubPublicationLease } from "../services/chat-github-publication-lease.js";
 import { githubChatManagementService } from "../services/chat-github-management.js";
@@ -20,6 +21,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
   writeFileSync,
@@ -55635,6 +55637,119 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         .from(chatPublications)
         .where(eq(chatPublications.id, stale!.id));
       expect(retained).toMatchObject({ state: "cancelled", attempts: 0 });
+    },
+  );
+
+  it.each(["board_unbound", "board_bound", "chat"] as const)(
+    "keeps captured Codex final publication causal for %s origin",
+    async (origin) => {
+      const fixture = await seedCompany();
+      const { callbacks, endpoint, runtime, service } =
+        await configuredTelegramEndpoint(fixture);
+      await db.update(chatEndpoints).set({ status: "active" })
+        .where(eq(chatEndpoints.id, endpoint.id));
+      const chatId = "-10077114000";
+      await db.insert(chatEndpointResources).values({
+        companyId: fixture.companyId,
+        endpointId: endpoint.id,
+        type: "chat",
+        providerResourceId: chatId,
+        label: "Causal publication group",
+        availability: "available",
+        enabled: true,
+      });
+      const group = makeThread({
+        channelId: chatId,
+        id: `telegram:${chatId}`,
+        name: "Causal publication group",
+      });
+      const providerMessageId = `${chatId}:1`;
+      await deliverMessage({
+        callbacks,
+        endpointId: endpoint.id,
+        provider: "telegram",
+        thread: group.thread,
+        message: makeMessage({
+          id: providerMessageId,
+          text: "@maya report progress",
+          userId: "causal-publication-user",
+          mentioned: true,
+        }),
+        trigger: "mention",
+      });
+      const [conversation] = await service.listConversations(endpoint.id);
+      if (!conversation) throw new Error("Expected Telegram conversation");
+      const providerRuntime = runtime.endpoints.get(endpoint.id)!;
+      providerRuntime.posts.length = 0;
+      providerRuntime.edits.length = 0;
+
+      // TIC-9's observed run was woken by a board comment on an ordinary task.
+      // An agent having an enabled Telegram destination grants no route to it.
+      const [boardIssue] = await db.insert(issues).values({
+        companyId: fixture.companyId,
+        title: "Board-only task (TIC-9 reproduction)",
+        status: "in_progress",
+        assigneeAgentId: fixture.assignedAgentId,
+      }).returning();
+      const issueId = origin === "board_unbound"
+        ? boardIssue!.id : conversation.issueId;
+      const wakeComment = origin === "chat" ? null
+        : await issueService(db).addComment(issueId, "?", { userId: "owner-user" });
+      const runId = randomUUID();
+      const contextSnapshot = origin === "chat"
+        ? await chatWakeContext({
+            endpointId: endpoint.id, issueId, provider: "telegram", providerMessageId,
+          })
+        : { issueId, source: "issue.comment", wakeCommentId: wakeComment!.id };
+      // Captured 2026-10-06 stdout: only agent-message records and terminal
+      // usage retained; private narration and answer details are redacted.
+      const stdout = readFileSync(new URL(
+        "./fixtures/codex-board-final.sanitized.jsonl", import.meta.url,
+      ), "utf8");
+      const parsed = parseCodexJsonl(stdout);
+      expect(parsed.summary).toBe("Частично готово… [remainder redacted]");
+      expect(parsed.sawProtocolTerminalEvent).toBe(true);
+      expect(parsed.errorMessage).toBeNull();
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId: fixture.companyId,
+        agentId: fixture.assignedAgentId,
+        status: "succeeded",
+        contextSnapshot,
+      });
+      const authorizationReason = await resolveChatRunPresentationAuthorizationReason(db, {
+        companyId: fixture.companyId, issueId, runId,
+      });
+      expect(authorizationReason).toBe(origin === "chat"
+        ? "allow_chat_run_presentation" : "internal_agent_write");
+      const answer = await issueService(db).addComment(
+        issueId, parsed.summary, { agentId: fixture.assignedAgentId, runId },
+        { authorType: "agent", authorizationReason: origin === "chat"
+          ? authorizationReason : "allow_self" },
+      );
+      await db.update(heartbeatRuns).set({ resultJson: {
+        presentationDecision: { chosenSource: "existing_issue_comment", commentId: answer.id },
+      } }).where(eq(heartbeatRuns.id, runId));
+      await enqueueChatRunMilestones(db);
+      await service.processPendingPublications();
+      await enqueueChatRunMilestones(db);
+      await service.processPendingPublications();
+
+      await expect(db.select({ body: issueComments.body }).from(issueComments)
+        .where(eq(issueComments.id, answer.id)))
+        .resolves.toEqual([{ body: parsed.summary }]);
+      const publications = await db.select().from(chatPublications)
+        .where(eq(chatPublications.commentId, answer.id));
+      if (origin === "chat") {
+        expect(publications).toEqual([expect.objectContaining({
+          endpointId: endpoint.id, conversationId: conversation.id, state: "published",
+        })]);
+        expect(providerRuntime.posts).toEqual([{ threadId: group.thread.id, text: parsed.summary }]);
+      } else {
+        expect(publications).toEqual([]);
+        expect(providerRuntime.posts).toEqual([]);
+        expect(providerRuntime.edits).toEqual([]);
+      }
     },
   );
 
