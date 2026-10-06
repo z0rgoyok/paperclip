@@ -1168,6 +1168,34 @@ describe("company portability", () => {
     expect(asTextFile(exported.files["skills/paperclipai/paperclip/release-changelog/SKILL.md"])).toContain("paperclipai/paperclip/release-changelog");
   });
 
+  it("asks for chat conversations when exporting all issues and per-project issues", async () => {
+    const portability = companyPortabilityService({} as any);
+    projectSvc.list.mockResolvedValue([
+      {
+        id: "project-1",
+        name: "Launch",
+        urlKey: "launch",
+        description: null,
+        leadAgentId: null,
+        targetDate: null,
+        color: null,
+        status: "planned",
+        executionWorkspacePolicy: null,
+        archivedAt: null,
+      },
+    ]);
+
+    await portability.previewExport("company-1", { include: { company: true, issues: true } });
+    expect(issueSvc.list).toHaveBeenCalledWith("company-1", expect.objectContaining({ includeChatConversations: true }));
+
+    issueSvc.list.mockClear();
+    await portability.previewExport("company-1", { include: { company: true, projects: true }, projectIssues: ["launch"] });
+    expect(issueSvc.list).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({ projectId: "project-1", includeChatConversations: true }),
+    );
+  });
+
   it("builds export previews without tasks by default", async () => {
     const portability = companyPortabilityService({} as any);
 

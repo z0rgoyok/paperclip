@@ -32,6 +32,7 @@ import {
   countActiveIssueFilters,
   defaultIssueFilterState,
   issueFilterLabel,
+  issueListingProjectId,
   issuePriorityOrder,
   normalizeIssueFilterState,
   resolveIssueFilterWorkspaceId,
@@ -1306,7 +1307,7 @@ function StreamlinedIssuesList({
         }));
     }
     if (viewState.groupBy === "project") {
-      const groups = groupBy(filtered, (issue) => issue.projectId ?? "__no_project");
+      const groups = groupBy(filtered, (issue) => issueListingProjectId(issue) ?? "__no_project");
       return Object.keys(groups)
         .sort((a, b) => {
           if (a === "__no_project") return 1;
@@ -2083,7 +2084,8 @@ function StreamlinedIssuesList({
                   const totalDescendants = hasChildren ? countDescendants(issue.id, childMap) : 0;
                   const isExpanded = !viewState.collapsedParents.includes(issue.id);
                   const useDeferredRowRendering = !(hasChildren && isExpanded);
-                  const issueProject = issue.projectId ? projectById.get(issue.projectId) ?? null : null;
+                  const listingProjectId = issueListingProjectId(issue);
+                  const issueProject = listingProjectId ? projectById.get(listingProjectId) ?? null : null;
                   const parentIssue = issue.parentId ? issueById.get(issue.parentId) ?? null : null;
                   const issueBadge = issueBadgeById?.get(issue.id);
                   const isMutedIssue = mutedIssueIds?.has(issue.id) === true;

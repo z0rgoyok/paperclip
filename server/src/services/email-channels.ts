@@ -1322,7 +1322,11 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
           const task = await issueService(db).create(
             endpoint.companyId,
             {
-              ...(leadProjectId ? { projectId: leadProjectId } : {}),
+              // Grouping only (see chat-channels.ts). A low-trust placement has
+              // its own project and workspace, so it gets no lead grouping.
+              ...(leadProjectId && !("projectId" in placement)
+                ? { organizationProjectId: leadProjectId }
+                : {}),
               ...placement,
               title: message.subject.slice(0, 200),
               description: `Email conversation for ${endpoint.botExternalId}`,

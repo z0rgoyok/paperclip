@@ -20,6 +20,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -85,6 +86,7 @@ import {
   environmentLeases,
   principalPermissionGrants,
   projects,
+  projectWorkspaces,
   toolConnections,
 } from "@paperclipai/db";
 import type { ChatProvider } from "@paperclipai/shared";
@@ -93,6 +95,10 @@ import type { Attachment, Author, Message, Thread } from "chat";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import { dashboardService } from "../services/dashboard.js";
+import {
+  findNativeChatWorkspaceScope,
+  nativeChatWorkspaceCwd,
+} from "../services/native-runtime/native-chat-workspace.js";
 import { deliverReconciledExecutions } from "../services/execution-recovery-resolution.js";
 import {
   unadmittedChatWakeupCondition,
@@ -3237,24 +3243,59 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       return issue!;
     }
 
-    it("creates a chat_channel task in the only project the agent leads, hidden from lists and counters until requested", async () => {
+    it("groups a chat_channel task under the only active project the agent leads without touching its run workspace", async () => {
       const fixture = await seedCompany();
+      // The led project carries a workspace and an isolated execution policy:
+      // none of it may reach a chat conversation.
       const [project] = await db
         .insert(projects)
         .values({
           companyId: fixture.companyId,
           name: "Led project",
           leadAgentId: fixture.assignedAgentId,
+          executionWorkspacePolicy: { enabled: true, defaultMode: "isolated_workspace" },
         })
         .returning();
-      // A project led by someone else and an archived one never compete.
+      await db.insert(projectWorkspaces).values({
+        companyId: fixture.companyId,
+        projectId: project!.id,
+        name: "Repo",
+        cwd: "/srv/led-project",
+        isPrimary: true,
+      });
+      // Archived, completed, cancelled and foreign-led projects never compete.
       await db.insert(projects).values([
         { companyId: fixture.companyId, name: "Other lead", leadAgentId: fixture.replacementAgentId },
         { companyId: fixture.companyId, name: "Archived", leadAgentId: fixture.assignedAgentId, archivedAt: new Date() },
+        { companyId: fixture.companyId, name: "Completed", leadAgentId: fixture.assignedAgentId, status: "completed" },
+        { companyId: fixture.companyId, name: "Cancelled", leadAgentId: fixture.assignedAgentId, status: "cancelled" },
       ]);
       const issue = await startConversation(fixture, "88001001");
       expect(issue.originKind).toBe("chat_channel");
-      expect(issue.projectId).toBe(project!.id);
+      expect(issue.organizationProjectId).toBe(project!.id);
+      // Exactly the pre-change shape: no execution project, workspace or policy.
+      expect(issue.projectId).toBeNull();
+      expect(issue.projectWorkspaceId).toBeNull();
+      expect(issue.executionWorkspaceId).toBeNull();
+      expect(issue.executionWorkspaceSettings).toBeNull();
+      expect(issue.executionWorkspacePreference).toBeNull();
+
+      // Native runner (local environment): the chat keeps the server-owned task root.
+      const instanceRoot = realpathSync(mkdtempSync(path.join(os.tmpdir(), "chat-kind-root-")));
+      try {
+        const scope = await findNativeChatWorkspaceScope(db, {
+          adapterType: "paperclip_runner",
+          environmentDriver: "local",
+          companyId: fixture.companyId,
+          agentId: fixture.assignedAgentId,
+          issueId: issue.id,
+          instanceRoot,
+        });
+        expect(scope?.projectId).toBeNull();
+        expect(nativeChatWorkspaceCwd(scope!, null, false)).toBe(scope!.taskRoot);
+      } finally {
+        rmSync(instanceRoot, { recursive: true, force: true });
+      }
 
       const svc = issueService(db);
       expect((await svc.list(fixture.companyId, {})).map((row) => row.id)).not.toContain(issue.id);
@@ -3263,16 +3304,32 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         (await svc.list(fixture.companyId, { includeChatConversations: true })).map((row) => row.id),
       ).toContain(issue.id);
       expect(await svc.count(fixture.companyId, { includeChatConversations: true })).toBe(1);
+      // Project filters match the grouping project, but only when chats are requested.
       expect(
         (await svc.list(fixture.companyId, { projectId: project!.id })).map((row) => row.id),
       ).not.toContain(issue.id);
+      expect(
+        (await svc.list(fixture.companyId, { projectId: project!.id, includeChatConversations: true })).map((row) => row.id),
+      ).toContain(issue.id);
 
       const summary = await dashboardService(db).summary(fixture.companyId);
       expect(summary.tasks.open).toBe(0);
       expect(summary.chatConversations.open).toBe(1);
     });
 
-    it("leaves the task project-less when the agent leads several projects", async () => {
+    it("keeps a blocked chat conversation in the blocked attention list and count", async () => {
+      const fixture = await seedCompany();
+      const issue = await startConversation(fixture, "88001004");
+      await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, issue.id));
+      const svc = issueService(db);
+      expect(
+        (await svc.list(fixture.companyId, { attention: "blocked", includeBlockedInboxAttention: true })).map((row) => row.id),
+      ).toContain(issue.id);
+      expect(await svc.count(fixture.companyId, { attention: "blocked" })).toBe(1);
+      expect((await svc.list(fixture.companyId, { status: "blocked" })).map((row) => row.id)).not.toContain(issue.id);
+    });
+
+    it("leaves the task ungrouped when the agent leads several projects", async () => {
       const fixture = await seedCompany();
       await db.insert(projects).values([
         { companyId: fixture.companyId, name: "One", leadAgentId: fixture.assignedAgentId },
@@ -3280,12 +3337,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       ]);
       const issue = await startConversation(fixture, "88001002");
       expect(issue.originKind).toBe("chat_channel");
+      expect(issue.organizationProjectId).toBeNull();
       expect(issue.projectId).toBeNull();
     });
 
-    it("leaves the task project-less when the agent leads no project", async () => {
+    it("leaves the task ungrouped when the agent leads no project", async () => {
       const fixture = await seedCompany();
       const issue = await startConversation(fixture, "88001003");
+      expect(issue.organizationProjectId).toBeNull();
       expect(issue.projectId).toBeNull();
     });
   });

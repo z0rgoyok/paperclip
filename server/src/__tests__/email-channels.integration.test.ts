@@ -1199,4 +1199,81 @@ describe("AgentMail durable email pipeline", () => {
       f.service.authorizeRead(f.companyId, outside.id, { agentId: f.agentId }),
     ).rejects.toThrow();
   });
+  it("groups an inbound email task under the only project its agent leads without changing the run project", async () => {
+    const f = await fixture();
+    const [led] = await db
+      .insert(projects)
+      .values({ companyId: f.companyId, name: "Led", leadAgentId: f.agentId })
+      .returning();
+    await f.receive(f.message());
+    const [task] = await db.select().from(issues).where(eq(issues.companyId, f.companyId));
+    expect(task.originKind).toBe("chat_channel");
+    expect(task.organizationProjectId).toBe(led.id);
+    expect(task.projectId).toBeNull();
+    expect(task.projectWorkspaceId).toBeNull();
+    expect(task.executionWorkspaceSettings).toBeNull();
+  });
+  it("lets a low-trust placement win over the lead project grouping", async () => {
+    const f = await fixture();
+    const [boundary] = await db
+      .insert(projects)
+      .values({ companyId: f.companyId, name: "Boundary" })
+      .returning();
+    await db
+      .insert(projects)
+      .values({ companyId: f.companyId, name: "Led", leadAgentId: f.agentId });
+    await db
+      .update(agents)
+      .set({
+        permissions: {
+          trustPreset: "low_trust_review",
+          authorizationPolicy: {
+            trustPreset: "low_trust_review",
+            trustBoundary: {
+              mode: "low_trust_review",
+              companyId: f.companyId,
+              projectIds: [boundary.id],
+            },
+          },
+        },
+      })
+      .where(eq(agents.id, f.agentId));
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+    await f.receive(f.message());
+    const [task] = await db.select().from(issues).where(eq(issues.companyId, f.companyId));
+    expect(task.projectId).toBe(boundary.id);
+    expect(task.organizationProjectId).toBeNull();
+  });
+  it("keeps a low-trust root placement without a project ungrouped even when the agent leads one", async () => {
+    const f = await fixture();
+    await db
+      .insert(projects)
+      .values({ companyId: f.companyId, name: "Led", leadAgentId: f.agentId });
+    const root = await issueService(db).create(f.companyId, { title: "Boundary root", status: "backlog" });
+    await db
+      .update(agents)
+      .set({
+        permissions: {
+          trustPreset: "low_trust_review",
+          authorizationPolicy: {
+            trustPreset: "low_trust_review",
+            trustBoundary: {
+              mode: "low_trust_review",
+              companyId: f.companyId,
+              rootIssueId: root.id,
+            },
+          },
+        },
+      })
+      .where(eq(agents.id, f.agentId));
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+    await f.receive(f.message());
+    const [task] = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, f.companyId), eq(issues.originKind, "chat_channel")));
+    expect(task.parentId).toBe(root.id);
+    expect(task.projectId).toBeNull();
+    expect(task.organizationProjectId).toBeNull();
+  });
 });

@@ -16098,7 +16098,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           const issue = await issuesSvc.create(
             endpoint.companyId,
             {
-              ...(leadProjectId ? { projectId: leadProjectId } : {}),
+              // Grouping only: projectId would pull the run into the project's
+              // workspace, environment and budget, which chat never did.
+              ...(leadProjectId ? { organizationProjectId: leadProjectId } : {}),
               title: safeTitle(
                 githubAutomatic
                   ? `PR #${githubAutomatic.context.pullNumber}: ${githubAutomatic.context.title}`

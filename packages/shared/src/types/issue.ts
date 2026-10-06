@@ -781,6 +781,8 @@ export interface Issue {
   id: string;
   companyId: string;
   projectId: string | null;
+  /** Grouping-only project (chat conversations); never used to resolve workspace or environment. */
+  organizationProjectId?: string | null;
   projectWorkspaceId: string | null;
   goalId: string | null;
   parentId: string | null;

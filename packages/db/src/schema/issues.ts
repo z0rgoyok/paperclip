@@ -34,6 +34,10 @@ export const issues = pgTable(
     conversationSessionGeneration: integer("conversation_session_generation").notNull().default(0),
     conversationBoundaryCommentId: uuid("conversation_boundary_comment_id"),
     projectId: uuid("project_id").references(() => projects.id),
+    // Grouping only (project lists and filters). Unlike project_id it never feeds
+    // workspace, environment, budget or pause resolution. Chat conversations use it
+    // to sit under the project their agent leads without changing how they run.
+    organizationProjectId: uuid("organization_project_id").references(() => projects.id),
     projectWorkspaceId: uuid("project_workspace_id").references(() => projectWorkspaces.id, { onDelete: "set null" }),
     goalId: uuid("goal_id").references(() => goals.id),
     parentId: uuid("parent_id").references((): AnyPgColumn => issues.id),
@@ -116,6 +120,7 @@ export const issues = pgTable(
     responsibleUserIdx: index("issues_company_responsible_user_idx").on(table.companyId, table.responsibleUserId),
     parentIdx: index("issues_company_parent_idx").on(table.companyId, table.parentId),
     projectIdx: index("issues_company_project_idx").on(table.companyId, table.projectId),
+    organizationProjectIdx: index("issues_company_organization_project_idx").on(table.companyId, table.organizationProjectId),
     originIdx: index("issues_company_origin_idx").on(table.companyId, table.originKind, table.originId),
     projectWorkspaceIdx: index("issues_company_project_workspace_idx").on(table.companyId, table.projectWorkspaceId),
     executionWorkspaceIdx: index("issues_company_execution_workspace_idx").on(table.companyId, table.executionWorkspaceId),

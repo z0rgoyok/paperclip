@@ -311,6 +311,19 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     ).rejects.toThrow("Plugin may only use originKind values under plugin:paperclip.missions");
   });
 
+  it("lists chat conversations for a plugin only when it opts in", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
+    const chat = await services.issues.create({ companyId, title: "Telegram hello", assigneeAgentId: agentId });
+    await db.update(issues).set({ originKind: "chat_channel", originId: "endpoint:thread:1" }).where(eq(issues.id, chat.id));
+
+    expect((await services.issues.list({ companyId, assigneeAgentId: agentId })).map((issue) => issue.id)).not.toContain(chat.id);
+    expect(
+      (await services.issues.list({ companyId, assigneeAgentId: agentId, includeChatConversations: true })).map((issue) => issue.id),
+    ).toContain(chat.id);
+    expect((await services.issues.list({ companyId, originKind: "chat_channel" })).map((issue) => issue.id)).toContain(chat.id);
+  });
+
   it("creates plugin operation issues with the generic operation origin", async () => {
     const { companyId } = await seedCompanyAndAgent();
     const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());

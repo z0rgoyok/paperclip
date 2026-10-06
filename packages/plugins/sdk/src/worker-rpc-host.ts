@@ -810,6 +810,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             originId: input.originId,
             status: input.status,
             includePluginOperations: input.includePluginOperations,
+            includeChatConversations: input.includeChatConversations,
             limit: input.limit,
             offset: input.offset,
           });

@@ -1835,6 +1835,7 @@ export interface WorkerToHostMethods {
       originId?: string;
       status?: string;
       includePluginOperations?: boolean;
+      includeChatConversations?: boolean;
       limit?: number;
       offset?: number;
     },

@@ -1,12 +1,13 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, notInArray } from "drizzle-orm";
 import { projects, type Db } from "@paperclipai/db";
 
 type DbOrTransaction = Pick<Db, "select">;
 
 /**
- * A chat conversation belongs to a project only when its assigned agent leads
- * exactly one active project. With none or several candidates the choice would
- * be a guess, so the conversation stays project-less.
+ * A chat conversation is grouped under a project only when its assigned agent
+ * leads exactly one active project (not archived, completed or cancelled).
+ * With none or several candidates the choice would be a guess, so the
+ * conversation stays ungrouped.
  */
 export async function resolveChatConversationProjectId(
   dbOrTx: DbOrTransaction,
@@ -21,6 +22,7 @@ export async function resolveChatConversationProjectId(
         eq(projects.companyId, companyId),
         eq(projects.leadAgentId, assignedAgentId),
         isNull(projects.archivedAt),
+        notInArray(projects.status, ["completed", "cancelled"]),
       ),
     )
     .limit(2);

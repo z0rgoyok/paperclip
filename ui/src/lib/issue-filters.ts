@@ -206,6 +206,11 @@ function issueMatchesExternalObjectStatusFilter(
   }
 }
 
+/** The project an issue is listed under: its execution project, else its grouping-only project. */
+export function issueListingProjectId(issue: Pick<Issue, "projectId" | "organizationProjectId">): string | null {
+  return issue.projectId ?? issue.organizationProjectId ?? null;
+}
+
 export function applyIssueFilters(
   issues: Issue[],
   state: IssueFilterState,
@@ -246,7 +251,10 @@ export function applyIssueFilters(
     result = result.filter((issue) => (issue.labelIds ?? []).some((id) => state.labels.includes(id)));
   }
   if (state.projects.length > 0) {
-    result = result.filter((issue) => issue.projectId != null && state.projects.includes(issue.projectId));
+    result = result.filter((issue) => {
+      const listingProjectId = issueListingProjectId(issue);
+      return listingProjectId != null && state.projects.includes(listingProjectId);
+    });
   }
   if (state.workspaces.length > 0) {
     result = result.filter((issue) => {

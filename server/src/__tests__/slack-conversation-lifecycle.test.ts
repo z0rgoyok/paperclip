@@ -90,6 +90,14 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await issueService(db).listReviewAttention(f.companyId, [{ id: f.issueId, companyId: f.companyId, status: "in_review" }])).get(f.issueId)?.state).toBe("none");
   });
 
+  it("keeps a blocked chat conversation in the attention feed and the blocked count", async () => {
+    const f = await fixture();
+    await db.update(issues).set({ status: "blocked", blockedTransitionAt: new Date(), unblockDescriptor: { owner: "board", action: "Answer the question" } as any }).where(eq(issues.id, f.issueId));
+    expect(await issueService(db).list(f.companyId)).toHaveLength(0);
+    expect((await attentionService(db).list(f.companyId)).items.filter((item) => item.sourceKind === "blocker_attention" && item.subject?.id === f.issueId).length).toBeGreaterThan(0);
+    expect(await issueService(db).count(f.companyId, { attention: "blocked" })).toBe(1);
+  });
+
   it("preserves waiting state in compact list responses used by the Inbox", async () => {
     const f = await fixture();
     await settle(f);

@@ -3064,10 +3064,16 @@ function shouldIncludePluginOperationIssues(filters: IssueFilters | undefined) {
   );
 }
 
+/** An issue belongs to a project by execution (projectId) or by grouping only (organizationProjectId). */
+function projectMembershipCondition(projectId: string) {
+  return or(eq(issues.projectId, projectId), eq(issues.organizationProjectId, projectId))!;
+}
+
 /**
  * Chat conversations are hidden from task lists and counters by default. They
  * stay reachable by explicit opt-in, by origin filters, by text search and in
- * the per-user inbox views, where a conversation can need attention.
+ * the per-user inbox views and the blocked attention views, where a
+ * conversation can need a human.
  */
 function shouldIncludeChatConversationIssues(filters: IssueFilters | undefined) {
   return Boolean(
@@ -3075,6 +3081,7 @@ function shouldIncludeChatConversationIssues(filters: IssueFilters | undefined) 
     filters?.originKind ||
     filters?.originKindPrefix ||
     filters?.originId ||
+    filters?.attention === "blocked" ||
     filters?.q?.trim() ||
     filters?.touchedByUserId ||
     filters?.unreadForUserId ||
@@ -4863,6 +4870,7 @@ const issueListSelect = {
   id: issues.id,
   companyId: issues.companyId,
   projectId: issues.projectId,
+  organizationProjectId: issues.organizationProjectId,
   projectWorkspaceId: issues.projectWorkspaceId,
   goalId: issues.goalId,
   parentId: issues.parentId,
@@ -6269,7 +6277,7 @@ async function blockedInboxIssueConditions(
   if (unreadForUserId)
     conditions.push(unreadForUserCondition(companyId, unreadForUserId));
   if (filters?.projectId)
-    conditions.push(eq(issues.projectId, filters.projectId));
+    conditions.push(projectMembershipCondition(filters.projectId));
   if (filters?.workspaceId) {
     conditions.push(
       or(
@@ -7952,7 +7960,7 @@ export function issueService(db: Db) {
         conditions.push(unreadForUserCondition(companyId, unreadForUserId));
       }
       if (filters?.projectId)
-        conditions.push(eq(issues.projectId, filters.projectId));
+        conditions.push(projectMembershipCondition(filters.projectId));
       if (filters?.workspaceId) {
         conditions.push(
           or(
@@ -8222,7 +8230,7 @@ export function issueService(db: Db) {
       if (filters?.assigneeUserId)
         conditions.push(eq(issues.assigneeUserId, filters.assigneeUserId));
       if (filters?.projectId)
-        conditions.push(eq(issues.projectId, filters.projectId));
+        conditions.push(projectMembershipCondition(filters.projectId));
       if (filters?.workspaceId) {
         conditions.push(
           or(

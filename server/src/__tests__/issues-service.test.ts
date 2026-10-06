@@ -1966,7 +1966,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       {
         id: chatId,
         companyId,
-        projectId,
+        organizationProjectId: projectId,
         title: "Telegram hello",
         status: "todo",
         priority: "medium",
@@ -1979,6 +1979,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     const ids = async (filters = {}) => (await svc.list(companyId, filters)).map((issue) => issue.id);
     expect(await ids()).toEqual([taskId]);
     expect(await ids({ projectId })).toEqual([taskId]);
+    expect(await ids({ projectId, includeChatConversations: true })).toEqual(expect.arrayContaining([taskId, chatId]));
     expect(await svc.count(companyId, {})).toBe(1);
     expect(await ids({ includeChatConversations: true })).toEqual(expect.arrayContaining([taskId, chatId]));
     expect(await svc.count(companyId, { includeChatConversations: true })).toBe(2);

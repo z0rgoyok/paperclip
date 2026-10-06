@@ -161,6 +161,25 @@ multiple teams.
 - Project status is **manually** updated (not auto-derived from issue states)
 - Projects can contain documents (specs, briefs) as linked entities
 
+### Chat conversations (managed fork)
+
+An issue created from an external chat (Telegram, Slack, inbound email) has
+`originKind = "chat_channel"`. Such conversations are a separate kind:
+
+- Issue lists and counts, and the dashboard `tasks` counters, omit them by
+  default. They are returned with `includeChatConversations=true`, with an
+  origin filter (`originKind`, `originKindPrefix`, `originId`), with a text
+  search, in per-user inbox scopes and in blocked/attention views. Agent callers
+  always receive them. The dashboard reports them separately as
+  `chatConversations`. The plugin SDK `issues.list` takes
+  `includeChatConversations`; company export includes them. Board API keys and
+  CLI calls to `/companies/:id/issues` see the new default.
+- When the assigned agent leads exactly one active project (not archived,
+  completed or cancelled), the conversation is grouped under it through
+  `issues.organization_project_id`. This column is for lists and project
+  filters only. `project_id`, the project workspace and the execution policy stay
+  empty, so the run workspace, environment and budget are unchanged.
+
 ---
 
 ## Milestones

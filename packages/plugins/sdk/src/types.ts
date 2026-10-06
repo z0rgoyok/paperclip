@@ -1424,11 +1424,14 @@ export interface PluginIssuesClient {
     companyId: string;
     projectId?: string;
     assigneeAgentId?: string;
-    originKind?: PluginIssueOriginKind;
+    /** A plugin origin kind, or the built-in "chat_channel" to read chat conversations. */
+    originKind?: PluginIssueOriginKind | "chat_channel";
     originKindPrefix?: string;
     originId?: string;
     status?: Issue["status"];
     includePluginOperations?: boolean;
+    /** Chat conversations are omitted from lists unless this is true or an origin filter is set. */
+    includeChatConversations?: boolean;
     limit?: number;
     offset?: number;
   }): Promise<Issue[]>;
