@@ -4,6 +4,7 @@ import type { Issue } from "@paperclipai/shared";
 import { ApiError } from "@/api/client";
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
+import { isChatConversationIssue } from "@/lib/chat-conversation";
 import {
   RECENT_TASKS_UPDATED_EVENT,
   getRecentTasksStorageKey,
@@ -77,7 +78,7 @@ export function useRecentTasks({
   const issueById = new Map(detailQueries.flatMap((query) => query.data ? [[query.data.id, query.data] as const] : []));
   const refreshedEntries = entries.map((entry) => {
     const issue = issueById.get(entry.id);
-    if (!issue || issue.companyId !== companyId || issue.hiddenAt) return entry;
+    if (!issue || issue.companyId !== companyId || issue.hiddenAt || isChatConversationIssue(issue)) return entry;
     return mergeRecentTaskSnapshot(entry, issue);
   });
   const queryRevision = detailQueries
@@ -93,7 +94,7 @@ export function useRecentTasks({
       const entry = queryEntries[index];
       if (!entry) return;
       if (query.data) {
-        if (query.data.companyId !== companyId || query.data.hiddenAt) {
+        if (query.data.companyId !== companyId || query.data.hiddenAt || isChatConversationIssue(query.data)) {
           removeIds.add(entry.id);
         } else {
           resolvedIssues.push(query.data);

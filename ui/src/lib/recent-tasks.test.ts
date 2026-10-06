@@ -55,6 +55,11 @@ describe("recent task persistence", () => {
     expect(entries.filter((entry) => entry.id === "4")).toHaveLength(1);
   });
 
+  it("never records a chat conversation as a recent task", () => {
+    recordRecentTask({ ...issue("chat"), originKind: "chat_channel" as const }, "user-1");
+    expect(readRecentTasks(getRecentTasksStorageKey("company-1", "user-1"), "company-1")).toEqual([]);
+  });
+
   it("refreshes conversation readiness when review or delivery changes without a task edit", () => {
     const task = { ...issue("1"), status: "in_review" as const, externalConversationState: "waiting" as const };
     recordRecentTask(task, "user-1");

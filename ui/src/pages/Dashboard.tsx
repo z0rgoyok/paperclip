@@ -12,6 +12,7 @@ import { dashboardApi } from "../api/dashboard";
 import { activityApi } from "../api/activity";
 import { accessApi } from "../api/access";
 import { issuesApi } from "../api/issues";
+import { isChatConversationIssue } from "../lib/chat-conversation";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
 import { buildCompanyUserProfileMap } from "../lib/company-members";
@@ -181,7 +182,7 @@ export function Dashboard() {
   });
   const { data: activity, dataUpdatedAt: activityUpdatedAt } = useQuery({
     queryKey: activityQueryKey,
-    queryFn: () => activityApi.list(selectedCompanyId!, { limit: DASHBOARD_ACTIVITY_LIMIT }),
+    queryFn: () => activityApi.list(selectedCompanyId!, { limit: DASHBOARD_ACTIVITY_LIMIT, excludeChatConversations: true }),
     enabled: !!selectedCompanyId,
   });
   usePublishSharedQueryData(sharedActivity, activity, activityUpdatedAt);
@@ -209,7 +210,7 @@ export function Dashboard() {
     [companyMembers?.users],
   );
 
-  const recentIssues = issues ? getRecentIssues(issues) : [];
+  const recentIssues = issues ? getRecentIssues(issues.filter((issue) => !isChatConversationIssue(issue))) : [];
   const recentActivity = useMemo(() => (activity ?? []).slice(0, 10), [activity]);
 
   useEffect(() => {

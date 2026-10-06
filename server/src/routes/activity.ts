@@ -230,6 +230,8 @@ export function activityRoutes(db: Db) {
       entityType: req.query.entityType as string | undefined,
       entityId: req.query.entityId as string | undefined,
       limit: normalizeActivityLimit(Number(req.query.limit)),
+      excludeChatConversations:
+        req.query.excludeChatConversations === "true" || req.query.excludeChatConversations === "1",
     };
     const result = await svc.list(filters);
     res.json(result);

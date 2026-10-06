@@ -18,7 +18,7 @@ import {
 } from "@paperclipai/db";
 import { hasWorkspaceRestoreFailure, safeWorkspaceRestorePath, ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
-import { visibleIssueCondition } from "./issue-visibility.js";
+import { nonChatConversationIssueCondition, visibleIssueCondition } from "./issue-visibility.js";
 import { classifyRunLiveness } from "./run-liveness.js";
 
 export interface ActivityFilters {
@@ -27,6 +27,8 @@ export interface ActivityFilters {
   entityType?: string;
   entityId?: string;
   limit?: number;
+  /** Drops events of chat conversations (originKind chat_channel); other entities stay. */
+  excludeChatConversations?: boolean;
 }
 
 const DEFAULT_ACTIVITY_LIMIT = 100;
@@ -348,6 +350,15 @@ export function activityService(db: Db) {
       }
       if (filters.entityId) {
         conditions.push(eq(activityLog.entityId, filters.entityId));
+      }
+
+      if (filters.excludeChatConversations) {
+        conditions.push(
+          or(
+            sql`${activityLog.entityType} != 'issue'`,
+            nonChatConversationIssueCondition(),
+          )!,
+        );
       }
 
       return db

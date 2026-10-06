@@ -219,6 +219,7 @@ describe.sequential("activity routes", () => {
       entityType: undefined,
       entityId: undefined,
       limit: 100,
+      excludeChatConversations: false,
     });
   });
 
@@ -237,7 +238,19 @@ describe.sequential("activity routes", () => {
       entityType: "issue",
       entityId: undefined,
       limit: 500,
+      excludeChatConversations: false,
     });
+  });
+
+  it("passes excludeChatConversations through for the dashboard feed", async () => {
+    mockActivityService.list.mockResolvedValue([]);
+    const app = await createApp();
+    await requestApp(app, (baseUrl) =>
+      request(baseUrl).get("/api/companies/company-1/activity?excludeChatConversations=true"),
+    );
+    expect(mockActivityService.list).toHaveBeenCalledWith(
+      expect.objectContaining({ excludeChatConversations: true }),
+    );
   });
 
   it("resolves alphanumeric issue identifiers before loading runs", async () => {

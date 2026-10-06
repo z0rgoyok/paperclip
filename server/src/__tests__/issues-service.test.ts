@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { asc, eq } from "drizzle-orm";
+import { activityService } from "../services/activity.js";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 import {
@@ -1986,6 +1987,114 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(await ids({ originKind: "chat_channel" })).toEqual([chatId]);
     expect(await ids({ originId: "endpoint:thread:1" })).toEqual([chatId]);
     expect(await ids({ q: "Telegram" })).toEqual([chatId]);
+  });
+
+  describe("grouping-only project of chat conversations", () => {
+    async function seedGrouped() {
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+      const groupA = randomUUID();
+      const groupB = randomUUID();
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Chat Runner",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+      await db.insert(projects).values([
+        { id: groupA, companyId, name: "A", status: "in_progress", leadAgentId: agentId },
+        { id: groupB, companyId, name: "B", status: "in_progress" },
+      ]);
+      const chatIds = [randomUUID(), randomUUID(), randomUUID()];
+      await db.insert(issues).values(
+        chatIds.map((id, index) => ({
+          id,
+          companyId,
+          organizationProjectId: groupA,
+          title: `Telegram ${index}`,
+          status: "todo",
+          priority: "medium",
+          assigneeAgentId: agentId,
+          originKind: "chat_channel",
+          originId: `endpoint:thread:${id}`,
+        })),
+      );
+      return { companyId, groupA, groupB, chatIds };
+    }
+
+    const listedUnder = async (companyId: string, projectId: string) =>
+      (await svc.list(companyId, { projectId, includeChatConversations: true })).map((issue) => issue.id);
+
+    it("clears the grouping when the project is set to another project", async () => {
+      const f = await seedGrouped();
+      await svc.update(f.chatIds[0]!, { projectId: f.groupB });
+      expect(await listedUnder(f.companyId, f.groupB)).toEqual([f.chatIds[0]]);
+      expect(await listedUnder(f.companyId, f.groupA)).not.toContain(f.chatIds[0]);
+      expect(await listedUnder(f.companyId, f.groupA)).toEqual(expect.arrayContaining([f.chatIds[1]!, f.chatIds[2]!]));
+    });
+
+    it("clears the grouping when the project is set to none", async () => {
+      const f = await seedGrouped();
+      await svc.update(f.chatIds[1]!, { projectId: null });
+      const [row] = await db.select().from(issues).where(eq(issues.id, f.chatIds[1]!));
+      expect(row?.projectId).toBeNull();
+      expect(row?.organizationProjectId).toBeNull();
+      expect(await listedUnder(f.companyId, f.groupA)).not.toContain(f.chatIds[1]);
+    });
+
+    it("keeps the grouping on updates that do not choose a project", async () => {
+      const f = await seedGrouped();
+      await svc.update(f.chatIds[2]!, { title: "Renamed" });
+      expect(await listedUnder(f.companyId, f.groupA)).toContain(f.chatIds[2]);
+    });
+
+    it("lets a project be deleted when only grouped chat conversations reference it", async () => {
+      const f = await seedGrouped();
+      await db.delete(projects).where(eq(projects.id, f.groupA));
+      const rows = await db.select().from(issues).where(eq(issues.companyId, f.companyId));
+      expect(rows).toHaveLength(3);
+      expect(rows.every((row) => row.organizationProjectId === null)).toBe(true);
+    });
+  });
+
+  it("drops chat conversation events from the dashboard activity feed on request", async () => {
+    const f = await (async () => {
+      const companyId = randomUUID();
+      const taskId = randomUUID();
+      const chatId = randomUUID();
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(issues).values([
+        { id: taskId, companyId, title: "Task", status: "todo", priority: "medium" },
+        { id: chatId, companyId, title: "Chat", status: "in_progress", priority: "medium", originKind: "chat_channel", originId: "e:t:1" },
+      ]);
+      await db.insert(activityLog).values([taskId, chatId].map((id) => ({
+        companyId, actorType: "system", actorId: "system", action: "issue.updated", entityType: "issue", entityId: id,
+      })));
+      await db.insert(activityLog).values({ companyId, actorType: "system", actorId: "system", action: "company.updated", entityType: "company", entityId: companyId });
+      return { companyId, taskId, chatId };
+    })();
+    const entityIds = async (excludeChatConversations?: boolean) =>
+      (await activityService(db).list({ companyId: f.companyId, excludeChatConversations })).map((event) => event.entityId);
+    expect(await entityIds()).toEqual(expect.arrayContaining([f.taskId, f.chatId, f.companyId]));
+    const filtered = await entityIds(true);
+    expect(filtered).toEqual(expect.arrayContaining([f.taskId, f.companyId]));
+    expect(filtered).not.toContain(f.chatId);
   });
 
   it("excludes plugin operation issues from unread inbox counts", async () => {

@@ -30763,7 +30763,7 @@
           "columnsTo": [
             "id"
           ],
-          "onDelete": "no action",
+          "onDelete": "set null",
           "onUpdate": "no action"
         },
         "issues_project_workspace_id_project_workspaces_id_fk": {

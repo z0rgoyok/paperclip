@@ -10796,6 +10796,9 @@ export function issueService(db: Db) {
           ? { ...nextExecutionWorkspaceSettings }
           : null;
       }
+      // An explicit project choice (another project or none) replaces the
+      // grouping-only project that chat conversations get on creation.
+      if (issueData.projectId !== undefined) patch.organizationProjectId = null;
       let validatedProjectWorkspace: { projectId: string } | null = null;
       let validatedExecutionWorkspace: { projectId: string } | null = null;
       if (!nextProjectId && nextProjectWorkspaceId) {

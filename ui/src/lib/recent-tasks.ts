@@ -131,11 +131,11 @@ export function mergeRecentTaskSnapshot(entry: RecentTaskEntry, issue: TaskSnaps
 }
 
 export function recordRecentTask(
-  issue: Pick<Issue, "id" | "companyId" | "title" | "identifier" | "status" | "externalConversationState" | "updatedAt" | "conversationAgentId">,
+  issue: Pick<Issue, "id" | "companyId" | "title" | "identifier" | "status" | "externalConversationState" | "updatedAt" | "conversationAgentId"> & Partial<Pick<Issue, "originKind">>,
   userId: string | null | undefined,
   recordedAt = new Date(issue.updatedAt).getTime(),
 ) {
-  if (issue.conversationAgentId) return;
+  if (issue.conversationAgentId || issue.originKind === "chat_channel") return;
   const storageKey = getRecentTasksStorageKey(issue.companyId, userId);
   const current = readRecentTasks(storageKey, issue.companyId);
   const existing = current.find((candidate) => candidate.id === issue.id);

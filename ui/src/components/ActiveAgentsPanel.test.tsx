@@ -305,4 +305,33 @@ describe("ActiveAgentsPanel", () => {
     expect(container.querySelectorAll(".motion-safe\\:animate-spin")).toHaveLength(0);
     await act(async () => root.unmount());
   });
+
+  it("shows a chat conversation without a task status icon or spinner", async () => {
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentRunCard
+        companyId="company-1"
+        run={createIssueRun(0, "chat-issue")}
+        issue={{ identifier: "TIC-4", title: "how are you", status: "in_progress", originKind: "chat_channel" }}
+      />);
+    });
+    expect(container.querySelector('[aria-label="Chat conversation"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label^="Task "]')).toBeNull();
+    expect(container.querySelectorAll(".motion-safe\\:animate-spin")).toHaveLength(0);
+    await act(async () => root.unmount());
+  });
+
+  it("keeps the task status icon for an ordinary task", async () => {
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentRunCard
+        companyId="company-1"
+        run={createIssueRun(0, "task-issue")}
+        issue={{ identifier: "TIC-5", title: "build", status: "in_progress", originKind: "manual" }}
+      />);
+    });
+    expect(container.querySelector('[aria-label="Chat conversation"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Task in progress"]')).not.toBeNull();
+    await act(async () => root.unmount());
+  });
 });

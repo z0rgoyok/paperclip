@@ -8,7 +8,8 @@ import type { TranscriptEntry } from "../adapters";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, relativeTime } from "../lib/utils";
-import { Clock3 } from "lucide-react";
+import { Clock3, MessageSquare } from "lucide-react";
+import { isChatConversationIssue } from "../lib/chat-conversation";
 import { StatusGlyph } from "./StatusGlyph";
 import { RunChatSurface } from "./RunChatSurface";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
@@ -160,7 +161,7 @@ export const AgentRunCard = memo(function AgentRunCard({
 }: {
   companyId: string;
   run: LiveRunForIssue;
-  issue?: Pick<Issue, "identifier" | "title" | "status" | "externalConversationState">;
+  issue?: Pick<Issue, "identifier" | "title" | "status" | "externalConversationState" | "originKind">;
   transcript?: TranscriptEntry[];
   hasOutput?: boolean;
   showTranscript?: boolean;
@@ -202,12 +203,16 @@ export const AgentRunCard = memo(function AgentRunCard({
           >
             <span className="flex min-w-0 items-baseline gap-2">
               <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
-                <StatusGlyph
-                  status={taskStatus}
-                  size="md"
-                  className="self-center"
-                  title={issue ? `Task ${taskStatus.replace(/_/g, " ")}` : undefined}
-                />
+                {isChatConversationIssue(issue) ? (
+                  <MessageSquare className="size-4 shrink-0 self-center text-muted-foreground" aria-label="Chat conversation" role="img" />
+                ) : (
+                  <StatusGlyph
+                    status={taskStatus}
+                    size="md"
+                    className="self-center"
+                    title={issue ? `Task ${taskStatus.replace(/_/g, " ")}` : undefined}
+                  />
+                )}
                 <span className="truncate">{taskTitle}</span>
               </span>
               <span className="shrink-0 font-mono text-(length:--text-micro) text-muted-foreground">{issue?.identifier ?? run.issueId.slice(0, 8)}</span>

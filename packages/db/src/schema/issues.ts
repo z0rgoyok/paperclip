@@ -37,7 +37,7 @@ export const issues = pgTable(
     // Grouping only (project lists and filters). Unlike project_id it never feeds
     // workspace, environment, budget or pause resolution. Chat conversations use it
     // to sit under the project their agent leads without changing how they run.
-    organizationProjectId: uuid("organization_project_id").references(() => projects.id),
+    organizationProjectId: uuid("organization_project_id").references(() => projects.id, { onDelete: "set null" }),
     projectWorkspaceId: uuid("project_workspace_id").references(() => projectWorkspaces.id, { onDelete: "set null" }),
     goalId: uuid("goal_id").references(() => goals.id),
     parentId: uuid("parent_id").references((): AnyPgColumn => issues.id),
