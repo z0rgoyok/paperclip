@@ -720,6 +720,7 @@ async function stopRun(input: {
     const stopped = await fetchJson(apiUrl(input.baseUrl, `/v1/runs/${encodeURIComponent(input.runId)}/stop`), {
       method: "POST",
       headers: input.headers,
+      signal: AbortSignal.timeout(STOP_GRACE_MS),
     });
     await input.ctx.onLog("stdout", `[hermes-gateway] stop requested for run ${input.runId}\n`);
     return asRecord(stopped);
@@ -741,6 +742,7 @@ async function fetchFinalStatus(input: {
       const status = await fetchJson(apiUrl(input.baseUrl, `/v1/runs/${encodeURIComponent(input.runId)}`), {
         method: "GET",
         headers: input.headers,
+        signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
       });
       const record = asRecord(status);
       const normalized = extractStatus(status);
@@ -859,6 +861,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   ]);
   const body = buildRunBody(ctx, sessionKey);
   const createRunUrl = apiUrl(baseUrl, "/v1/runs");
+  await ctx.onCancellationReady?.();
+  if (ctx.signal?.aborted) return {
+    exitCode: 1, signal: "SIGTERM", timedOut: false,
+    errorCode: "hermes_gateway_cancelled", errorMessage: "Run cancelled before Hermes dispatch.",
+  };
 
   await ctx.onMeta?.({
     adapterType: ADAPTER_TYPE,
@@ -902,6 +909,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   await ctx.onLog("stdout", `[hermes-gateway] run created: ${runId}\n`);
+  await ctx.onMeta?.({ adapterType: ADAPTER_TYPE, command: "Hermes run accepted",
+    context: { hermesRunId: runId, paperclipRunId: ctx.runId } });
 
   const state = createExecutionState(runId);
   const finishSteering = registerSteeringRun(ctx.runId, {
@@ -944,24 +953,37 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     timeoutTimer = setTimeout(() => resolve("timeout"), timeoutMs);
   });
 
-  const outcome = await Promise.race([state.terminalPromise, timeoutPromise]);
+  let removeAbortListener = () => {};
+  const cancellation = new Promise<"cancelled">((resolve) => {
+    const abort = () => resolve("cancelled");
+    if (ctx.signal?.aborted) abort();
+    else {
+      ctx.signal?.addEventListener("abort", abort, { once: true });
+      removeAbortListener = () => ctx.signal?.removeEventListener("abort", abort);
+    }
+  });
+  const outcome = await Promise.race([state.terminalPromise, timeoutPromise, cancellation]);
+  removeAbortListener();
   if (timeoutTimer) clearTimeout(timeoutTimer);
   controller.abort();
 
-  if (outcome === "timeout") {
+  if (outcome === "timeout" || outcome === "cancelled") {
     await stopRun({ ctx, baseUrl, headers: eventHeaders, runId, redactText });
     const finalStatus = await fetchFinalStatus({ baseUrl, headers: eventHeaders, runId, deadlineMs: STOP_GRACE_MS });
     const pendingSteeringDeliveryIds = await finishSteering(finalStatus?.pending_steer, finalStatus === null);
     return {
       exitCode: 1,
-      signal: null,
-      timedOut: true,
-      errorCode: "hermes_gateway_timeout",
-      errorMessage: `Hermes gateway run timed out after ${timeoutSec}s.`,
+      signal: outcome === "cancelled" ? "SIGTERM" : null,
+      timedOut: outcome === "timeout",
+      errorCode: finalStatus === null ? "hermes_gateway_stop_unconfirmed"
+        : outcome === "cancelled" ? "hermes_gateway_cancelled" : "hermes_gateway_timeout",
+      errorMessage: finalStatus === null ? "Hermes termination could not be confirmed; reconcile the remote run before retrying."
+        : outcome === "cancelled" ? "Hermes run cancelled." : `Hermes gateway run timed out after ${timeoutSec}s.`,
       provider: "hermes_gateway",
       resultJson: {
         run_id: runId,
         pendingSteeringDeliveryIds,
+        remoteStopConfirmed: finalStatus !== null,
         status: extractStatus(finalStatus) ?? "timeout",
         last_event: state.lastEventName,
         final_status: redactForLog(finalStatus, [], 0, redactText),

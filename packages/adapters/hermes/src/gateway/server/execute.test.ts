@@ -80,6 +80,36 @@ describe("parseSseFramesForTest", () => {
 });
 
 describe("execute", () => {
+  it("does not dispatch when cancellation readiness reports an already stopped run", async () => {
+    const controller = new AbortController();
+    const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key" });
+    ctx.signal = controller.signal;
+    ctx.onCancellationReady = async () => { controller.abort(); };
+    const request = vi.fn();
+    vi.stubGlobal("fetch", request);
+    expect((await execute(ctx)).errorCode).toBe("hermes_gateway_cancelled");
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("forwards Stop during run creation and waits for the remote terminal status", async () => {
+    const controller = new AbortController();
+    const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 0 });
+    ctx.signal = controller.signal;
+    let stopRequested = false;
+    const request = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) { controller.abort(); return new Response('{"run_id":"cancel-target"}'); }
+      if (url.endsWith("/stop")) { stopRequested = true; return new Response('{"status":"stopping"}'); }
+      if (url.endsWith("/events")) return new Response(sseStream(": connected\n\n"));
+      expect(stopRequested).toBe(true);
+      return new Response('{"status":"cancelled"}');
+    });
+    vi.stubGlobal("fetch", request);
+    const result = await execute(ctx);
+    expect(result).toMatchObject({ signal: "SIGTERM", timedOut: false, errorCode: "hermes_gateway_cancelled",
+      resultJson: { run_id: "cancel-target", remoteStopConfirmed: true } });
+    expect(request.mock.calls.filter(([url]) => String(url).endsWith("/stop"))).toHaveLength(1);
+  });
   it("rejects remote plain HTTP unless the unsafe dev escape hatch is enabled", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ run_id: "unexpected" }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);

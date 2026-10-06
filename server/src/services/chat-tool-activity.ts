@@ -1,6 +1,7 @@
 import type { TranscriptEntry } from "@paperclipai/adapter-utils";
 import { parseClaudeStdoutLine } from "@paperclipai/adapter-claude-local/ui";
 import { parseCodexStdoutLine } from "@paperclipai/adapter-codex-local/ui";
+import { parseHermesGatewayStdoutLine } from "@paperclipai/hermes-paperclip-adapter/gateway/ui";
 import { redactSensitiveText } from "../redaction.js";
 import type { RunOutputChunk } from "./run-output-tap.js";
 
@@ -35,6 +36,7 @@ type StdoutParser = (line: string, ts: string) => TranscriptEntry[];
 const STDOUT_PARSERS: Readonly<Record<string, StdoutParser>> = {
   codex_local: parseCodexStdoutLine,
   claude_local: parseClaudeStdoutLine,
+  hermes_gateway: parseHermesGatewayStdoutLine,
 };
 
 export function toolActivityParserFor(adapterType: string): StdoutParser | null {
@@ -455,7 +457,7 @@ export class ChatToolActivityRelay<T extends ToolActivityTarget> {
     const ts = new Date(this.now()).toISOString();
     for (const rawLine of rawLines) {
       const line = rawLine.trim();
-      if (!line.startsWith("{")) continue;
+      if (!line.startsWith("{") && !line.startsWith("[hermes-gateway:event]")) continue;
       let entries: TranscriptEntry[];
       try {
         entries = state.parser(line, ts);

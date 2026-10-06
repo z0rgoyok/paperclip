@@ -63430,7 +63430,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ).toMatchObject({ state: "processed" });
   });
 
-  it("relays one live tool activity message per run, masks secrets, and deletes it for NO_REPLY", async () => {
+  it.each(["codex_local", "hermes_gateway"])("relays %s live tool activity per run, masks secrets, and deletes it for NO_REPLY", async (adapterType) => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, runtime, service } =
       await configuredTelegramEndpoint(fixture, {
@@ -63481,7 +63481,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
     const botToken = "7123456789:AAH4k3Jx9qLmNoPqRsTuVwXyZaBcDeFgHiJ";
     const command = (id: string, cmd: string) =>
-      `${JSON.stringify({ type: "item.started", item: { id, type: "command_execution", command: cmd, status: "in_progress" } })}\n`;
+      adapterType === "hermes_gateway" ? `[hermes-gateway:event] run=remote event=tool.started data=${JSON.stringify({ tool: "command_execution", preview: cmd })}\n` : `${JSON.stringify({ type: "item.started", item: { id, type: "command_execution", command: cmd, status: "in_progress" } })}\n`;
     const startRun = async (providerMessageId: string) => {
       const runId = randomUUID();
       await db.insert(heartbeatRuns).values({
@@ -63509,7 +63509,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           runId,
           agentId: endpoint.assignedAgentId,
           issueId: conversation.issueId,
-          adapterType: "codex_local",
+          adapterType,
           stream: "stdout",
           chunk,
           secretValues: () => ["hunter2-database-pass"],

@@ -144,6 +144,18 @@ This mode does not start Hermes. It creates runs with `POST /v1/runs`, streams
 Hermes events with SSE, polls run status as a fallback, and stops timed-out runs
 with `POST /v1/runs/{run_id}/stop`.
 
+The adapter also forwards Paperclip Stop/cancel to that endpoint, including a
+cancellation received while run creation is in flight. It waits for a terminal
+status and records `remoteStopConfirmed`; an unconfirmed stop is reported as
+`hermes_gateway_stop_unconfirmed` and needs remote reconciliation before retry.
+Pre-dispatch cancellation does not create a Hermes run.
+
+Opted-in chat destinations receive `tool.started` activity through the existing
+chat relay. Tool completion previews are results and are never published there.
+For a dedicated gateway, credentials and operational skills belong to its own
+managed runtime. This adapter does not forward `adapterConfig.env` or create a
+Paperclip run JWT for remote tool commands.
+
 ### Chat input during a gateway run
 
 Paperclip steers an admitted chat message into an active `hermes_gateway` run

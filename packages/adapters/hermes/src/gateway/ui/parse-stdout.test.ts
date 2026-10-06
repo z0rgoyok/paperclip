@@ -83,6 +83,13 @@ describe("parseHermesGatewayStdoutLine — reasoning.available payload extractio
 });
 
 describe("parseHermesGatewayStdoutLine — regression guards for unrelated handlers", () => {
+  it("normalizes Hermes tool starts and keeps completion output out of activity", () => {
+    expect(parseHermesGatewayStdoutLine(eventLine("tool.started", { tool: "terminal", preview: "git status" }), TS))
+      .toEqual([{ kind: "tool_call", ts: TS, name: "terminal", input: { command: "git status" } }]);
+    const completed = parseHermesGatewayStdoutLine(eventLine("tool.completed", { tool: "terminal", preview: "SECRET-RESULT" }), TS);
+    expect(completed.every(entry => entry.kind !== "tool_call")).toBe(true);
+    expect(JSON.stringify(completed)).not.toContain("SECRET-RESULT");
+  });
   it("still yields an assistant delta part for message.delta", () => {
     const result = parseHermesGatewayStdoutLine(
       eventLine("message.delta", { delta: "Hello there" }),

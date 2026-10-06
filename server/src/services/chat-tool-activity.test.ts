@@ -155,6 +155,17 @@ function harness(input: { targets?: Target[]; minEditIntervalMs?: number } = {})
 }
 
 describe("tool activity relay", () => {
+  it("relays Hermes event prefixes, preserves repeated calls, masks secrets and ignores results", async () => {
+    const h = harness();
+    const started = `[hermes-gateway:event] run=remote event=tool.started data={"tool":"terminal","preview":"echo s3cr3t-value"}\n`;
+    h.relay.observe(h.chunk(started, { adapterType: "hermes_gateway" }));
+    h.relay.observe(h.chunk(started, { adapterType: "hermes_gateway" }));
+    h.relay.observe(h.chunk('[hermes-gateway:event] run=remote event=tool.completed data={"preview":"DO-NOT-PUBLISH"}\n', { adapterType: "hermes_gateway" }));
+    await h.relay.flush();
+    expect(h.calls.at(-1)?.text).toBe("🔧 terminal: echo ***\n🔧 terminal: echo ***");
+    expect(JSON.stringify(h.calls)).not.toContain("DO-NOT-PUBLISH");
+    h.relay.dispose();
+  });
   afterEach(() => {
     vi.useRealTimers();
   });

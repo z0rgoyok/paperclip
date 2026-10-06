@@ -63,6 +63,13 @@ export function parseHermesGatewayStdoutLine(line: string, ts: string): Transcri
   if (eventMatch) {
     const eventName = eventMatch[2];
     const data = asRecord(safeJsonParse(eventMatch[3]));
+    if (eventName === "tool.started") {
+      const name = asString(data?.tool).trim();
+      if (!name) return [];
+      return [{ kind: "tool_call", ts, name, input: { command: asString(data?.preview) },
+        ...(asString(data?.tool_call_id) ? { toolUseId: asString(data?.tool_call_id) } : {}),
+      }];
+    }
     if (eventName === "message.delta") {
       const delta = asString(data?.delta) || asString(data?.text_delta);
       return delta ? [{ kind: "assistant", ts, text: stripAnsi(delta), delta: true }] : [];
