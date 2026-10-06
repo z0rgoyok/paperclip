@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CHAT_TYPING_REFRESH_MS, ChatTypingRelay } from "./chat-typing.js";
+import {
+  CHAT_TYPING_MAX_LIFETIME_MS,
+  CHAT_TYPING_REFRESH_MS,
+  ChatTypingRelay,
+} from "./chat-typing.js";
 import { createChatSdkEndpointRuntime } from "./chat-sdk-runtime.js";
 
 const relays: ChatTypingRelay<{ id: string; conversationId: string }>[] = [];
@@ -46,6 +50,42 @@ describe("conversation typing heartbeat", () => {
     await relay.settle(source.conversationId);
     await vi.advanceTimersByTimeAsync(12_000);
     expect(send).toHaveBeenCalledTimes(4);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("keeps refresh gaps below 4.5 seconds with alternating authorization latency", async () => {
+    const { send, isActive, relay, source } = fixture();
+    const sends: number[] = [];
+    let check = 0;
+    isActive.mockImplementation(async () => {
+      await new Promise((resolve) =>
+        setTimeout(resolve, check++ % 2 === 0 ? 60 : 10),
+      );
+      return true;
+    });
+    send.mockImplementation(async () => {
+      sends.push(Date.now());
+    });
+    const starting = relay.start(source);
+    await vi.advanceTimersByTimeAsync(60);
+    await starting;
+    await vi.advanceTimersByTimeAsync(36_000);
+    await relay.flush();
+    expect(sends).toHaveLength(10);
+    const gaps = sends.slice(1).map((at, index) => at - sends[index]!);
+    expect(Math.max(...gaps)).toBeLessThanOrEqual(4_500);
+    expect(Math.min(...gaps)).toBeGreaterThanOrEqual(3_000);
+  });
+
+  it("caps a conversation lifetime even if active sources are added or probes fail", async () => {
+    const { send, isActive, relay, source } = fixture();
+    await relay.start(source);
+    await vi.advanceTimersByTimeAsync(CHAT_TYPING_MAX_LIFETIME_MS - 8_000);
+    await relay.start({ ...source, id: "run-2" });
+    const beforeCap = send.mock.calls.length;
+    isActive.mockRejectedValue(new Error("database unavailable"));
+    await vi.advanceTimersByTimeAsync(12_000);
+    expect(send).toHaveBeenCalledTimes(beforeCap);
     expect(vi.getTimerCount()).toBe(0);
   });
 

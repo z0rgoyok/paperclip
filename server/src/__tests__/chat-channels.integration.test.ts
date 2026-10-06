@@ -1246,6 +1246,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         | "storage"
         | "reachAuthorizationBarrier"
         | "toolActivityMinEditIntervalMs"
+        | "typingProbeReadBarrier"
       >
     > & {
       cancelRun?: NonNullable<
@@ -63596,8 +63597,19 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         .update(agents)
         .set({ adapterType })
         .where(eq(agents.id, fixture.assignedAgentId));
+      let heldConversation: string | null = null;
+      let signalProbe!: () => void;
+      let releaseProbe!: () => void;
+      let probeReached = Promise.resolve();
+      let probeReleased = Promise.resolve();
       const { callbacks, endpoint, runtime, service } =
-        await configuredTelegramEndpoint(fixture);
+        await configuredTelegramEndpoint(fixture, {
+          typingProbeReadBarrier: async (conversationId) => {
+            if (heldConversation !== conversationId) return;
+            signalProbe();
+            await probeReleased;
+          },
+        });
       await db
         .update(chatEndpoints)
         .set({ status: "active" })
@@ -63613,28 +63625,24 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           kind: "user",
         })
         .returning();
-      await db
-        .insert(chatIdentityLinks)
-        .values({
-          companyId: fixture.companyId,
-          endpointId: endpoint.id,
-          principalId: principal!.id,
-          paperclipUserId: "owner-user",
-          status: "linked",
-          confirmedAt: new Date(),
-        });
+      await db.insert(chatIdentityLinks).values({
+        companyId: fixture.companyId,
+        endpointId: endpoint.id,
+        principalId: principal!.id,
+        paperclipUserId: "owner-user",
+        status: "linked",
+        confirmedAt: new Date(),
+      });
       const chatId = "-10077112813";
-      await db
-        .insert(chatEndpointResources)
-        .values({
-          companyId: fixture.companyId,
-          endpointId: endpoint.id,
-          type: "chat",
-          providerResourceId: chatId,
-          label: "Typing forum",
-          availability: "available",
-          enabled: true,
-        });
+      await db.insert(chatEndpointResources).values({
+        companyId: fixture.companyId,
+        endpointId: endpoint.id,
+        type: "chat",
+        providerResourceId: chatId,
+        label: "Typing forum",
+        availability: "available",
+        enabled: true,
+      });
       const group = makeThread({
         channelId: chatId,
         id: `telegram:${chatId}:12813`,
@@ -63649,6 +63657,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         "timed_out",
         "quarantined",
         "revoked",
+        "delivery_unknown",
+        "awaiting_consent",
+        "missing_reply",
+        "missing_finished_at",
+        "lock_free",
         "shutdown",
       ].entries()) {
         const providerMessageId = `${chatId}:${index + 1}`;
@@ -63666,7 +63679,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           }),
           trigger: "mention",
         });
-        const [conversation] = await service.listConversations(endpoint.id);
+        const conversation = (await service.listConversations(endpoint.id)).find((row) => row.externalThreadId === group.thread.id);
         const context = await chatWakeContext({
           endpointId: endpoint.id,
           issueId: conversation!.issueId,
@@ -63687,23 +63700,21 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             ),
           );
         const runId = randomUUID();
-        await db
-          .insert(heartbeatRuns)
-          .values({
-            id: runId,
-            companyId: fixture.companyId,
-            agentId: endpoint.assignedAgentId,
-            status: "running",
-            wakeupRequestId: action!.id,
-            contextSnapshot: context,
-            resultJson: {
-              presentationDecision: {
-                chosenSource: "final_agent_message",
-                commentAction: "create",
-                reasonCodes: [],
-              },
+        await db.insert(heartbeatRuns).values({
+          id: runId,
+          companyId: fixture.companyId,
+          agentId: endpoint.assignedAgentId,
+          status: "running",
+          wakeupRequestId: action!.id,
+          contextSnapshot: context,
+          resultJson: {
+            presentationDecision: {
+              chosenSource: "final_agent_message",
+              commentAction: "create",
+              reasonCodes: [],
             },
-          });
+          },
+        });
         await db
           .update(agentWakeupRequests)
           .set({ runId, status: "claimed" })
@@ -63719,7 +63730,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           // Keep the successful run's typing alive through delayed publication.
           await db
             .update(heartbeatRuns)
-            .set({ status: "succeeded" })
+            .set({ status: "succeeded", finishedAt: new Date() })
             .where(eq(heartbeatRuns.id, runId));
           const beforeOutbox = providerRuntime.typing.length;
           await vi.advanceTimersByTimeAsync(4_000);
@@ -63739,6 +63750,148 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             pendingCount + (outcome === "reply" ? 1 : 0),
           );
           await service.processPendingPublications();
+        } else if (
+          outcome === "delivery_unknown" ||
+          outcome === "awaiting_consent"
+        ) {
+          await db
+            .update(heartbeatRuns)
+            .set({ status: "succeeded", finishedAt: new Date() })
+            .where(eq(heartbeatRuns.id, runId));
+          await addSelectedChatFinal({
+            agentId: endpoint.assignedAgentId,
+            body: "Reply awaiting delivery.",
+            companyId: fixture.companyId,
+            issueId: conversation!.issueId,
+            runId,
+          });
+          await db
+            .update(chatPublications)
+            .set({ state: outcome })
+            .where(
+              and(
+                eq(chatPublications.conversationId, conversation!.id),
+                inArray(
+                  chatPublications.commentId,
+                  db
+                    .select({ id: issueComments.id })
+                    .from(issueComments)
+                    .where(eq(issueComments.createdByRunId, runId)),
+                ),
+              ),
+            );
+        } else if (
+          outcome === "missing_reply" ||
+          outcome === "missing_finished_at"
+        ) {
+          await db
+            .update(heartbeatRuns)
+            .set({
+              status: "succeeded",
+              finishedAt: outcome === "missing_reply" ? new Date() : null,
+            })
+            .where(eq(heartbeatRuns.id, runId));
+          if (outcome === "missing_reply") {
+            await vi.advanceTimersByTimeAsync(4_000);
+            await service.flushTyping();
+            expect(providerRuntime.typing.length).toBe(beforeRefresh + 2);
+            // Beyond the one-minute post-success grace, a promised but absent
+            // outbox row cannot keep the conversation alive.
+            await vi.advanceTimersByTimeAsync(60_000);
+            await service.flushTyping();
+          }
+        } else if (outcome === "lock_free") {
+          const beforeLockedRefresh = providerRuntime.typing.length;
+          await db.transaction(async (tx) => {
+            await tx
+              .select()
+              .from(chatEndpoints)
+              .where(eq(chatEndpoints.id, endpoint.id))
+              .for("no key update");
+            await vi.advanceTimersByTimeAsync(4_000);
+            await service.flushTyping();
+            expect(providerRuntime.typing.length).toBe(beforeLockedRefresh + 1);
+          });
+          probeReached = new Promise<void>((resolve) => {
+            signalProbe = resolve;
+          });
+          probeReleased = new Promise<void>((resolve) => {
+            releaseProbe = resolve;
+          });
+          heldConversation = conversation!.id;
+          await vi.advanceTimersByTimeAsync(4_000);
+          await probeReached;
+          const other = makeThread({
+            channelId: chatId,
+            id: `telegram:${chatId}:1269`,
+            name: "Concurrent typing intake",
+          });
+          const intake = deliverMessage({
+            callbacks,
+            endpointId: endpoint.id,
+            provider: "telegram",
+            thread: other.thread,
+            message: makeMessage({
+              id: `${chatId}:100`,
+              text: "@maya concurrent request",
+              userId: "typing-user",
+              mentioned: true,
+            }),
+            trigger: "mention",
+          });
+          let timeout: ReturnType<typeof setTimeout> | undefined;
+          try {
+            await Promise.race([
+              intake,
+              new Promise<void>((_, reject) => {
+                timeout = setTimeout(
+                  () =>
+                    reject(new Error("Typing refresh blocked concurrent intake")),
+                  2_000,
+                );
+              }),
+            ]);
+            const [delivery] = await db
+              .select()
+              .from(chatDeliveries)
+              .where(
+                eq(
+                  chatDeliveries.providerEventId,
+                  `${other.thread.id}:${chatId}:100`,
+                ),
+              );
+            expect(delivery?.state).toBe("processed");
+            const [wake] = await db
+              .select()
+              .from(chatActions)
+              .where(
+                and(
+                  eq(chatActions.deliveryId, delivery!.id),
+                  eq(chatActions.kind, "inbound_wakeup"),
+                ),
+              );
+            expect(wake?.status).toBe("processed");
+          } finally {
+            clearTimeout(timeout);
+            heldConversation = null;
+            releaseProbe();
+            await Promise.allSettled([intake, service.flushTyping()]);
+          }
+          // Retire the second conversation, then end the original run so the
+          // common stop assertion measures this run alone.
+          await db
+            .update(chatConversations)
+            .set({ state: "completed" })
+            .where(
+              and(
+                eq(chatConversations.endpointId, endpoint.id),
+                eq(chatConversations.externalThreadId, other.thread.id),
+              ),
+            );
+          await db
+            .update(heartbeatRuns)
+            .set({ status: "cancelled" })
+            .where(eq(heartbeatRuns.id, runId));
         } else if (outcome === "quarantined") {
           await db
             .update(issues)

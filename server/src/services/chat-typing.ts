@@ -1,6 +1,8 @@
 import { classifyChatPublicationError } from "./chat-publication-errors.js";
 
 export const CHAT_TYPING_REFRESH_MS = 4_000;
+export const CHAT_TYPING_SUCCESS_GRACE_MS = 60_000;
+export const CHAT_TYPING_MAX_LIFETIME_MS = 60 * 60_000;
 
 type TypingSource = { id: string; conversationId: string };
 type TypingLane<T> = {
@@ -8,6 +10,8 @@ type TypingLane<T> = {
   timer: ReturnType<typeof setInterval>;
   pending: Promise<void> | null;
   nextSendAt: number;
+  retryUntil: number;
+  expiresAt: number;
 };
 
 /** One serialized, best-effort typing heartbeat per admitted conversation. */
@@ -37,6 +41,8 @@ export class ChatTypingRelay<T extends TypingSource> {
       }, CHAT_TYPING_REFRESH_MS),
       pending: null,
       nextSendAt: 0,
+      retryUntil: 0,
+      expiresAt: Date.now() + CHAT_TYPING_MAX_LIFETIME_MS,
     };
     lane.timer.unref?.();
     this.lanes.set(source.conversationId, lane);
@@ -45,7 +51,14 @@ export class ChatTypingRelay<T extends TypingSource> {
 
   private tick(conversationId: string, send = true): Promise<void> {
     const lane = this.lanes.get(conversationId);
-    if (!lane || lane.pending) return lane?.pending ?? Promise.resolve();
+    const tickStartedAt = Date.now();
+    if (!lane) return Promise.resolve();
+    if (tickStartedAt >= lane.expiresAt) {
+      clearInterval(lane.timer);
+      this.lanes.delete(conversationId);
+      return Promise.resolve();
+    }
+    if (lane.pending) return lane.pending;
     const current = () =>
       !this.disposed && this.lanes.get(conversationId) === lane;
     lane.pending = (async () => {
@@ -56,19 +69,26 @@ export class ChatTypingRelay<T extends TypingSource> {
           else lane.sources.delete(source.id);
         }
         if (!current()) return;
-        if (!active) {
+        if (!active || Date.now() >= lane.expiresAt) {
           clearInterval(lane.timer);
           this.lanes.delete(conversationId);
           return;
         }
-        if (!send || Date.now() < lane.nextSendAt) return;
-        lane.nextSendAt = Date.now() + CHAT_TYPING_REFRESH_MS;
+        // Anchor cadence before awaited reads; variable check latency must
+        // never turn a four-second interval into an eight-second interval.
+        if (
+          !send ||
+          tickStartedAt < lane.nextSendAt ||
+          Date.now() < lane.retryUntil
+        )
+          return;
+        lane.nextSendAt = tickStartedAt + CHAT_TYPING_REFRESH_MS;
         await this.options.send(active);
       } catch (error) {
         const disposition = classifyChatPublicationError(error, 1);
         if (disposition.kind === "retry") {
-          lane.nextSendAt = Math.max(
-            lane.nextSendAt,
+          lane.retryUntil = Math.max(
+            lane.retryUntil,
             Date.now() + disposition.retryAfterMs,
           );
         }
