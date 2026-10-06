@@ -4,6 +4,7 @@ import { externalConversationStateSql, nonIdleSlackIssueCondition } from "./slac
 import { settleSlackConversation } from "./slack-conversation-lifecycle.js";
 import { publicChatTaskUrl } from "./chat-task-url.js";
 import { effectiveChatCommunicationGuidance } from "./chat-communication-guidance.js";
+import { telegramAmbientTopicAllowed } from "./telegram-ambient-topics.js";
 import { toolActionDeliveryService } from "./tool-action-delivery.js";
 import { githubBotConnectionIdsForRun } from "./chat-github-tools.js";
 import { readQueuedInteractionResponse } from "./queued-interaction-response.js";
@@ -10628,6 +10629,9 @@ export function heartbeatService(
         chatProvider: chatEndpoints.provider,
         chatIsDirectMessage: chatConversations.isDirectMessage,
         chatRespondWithoutMention: chatEndpointResources.respondWithoutMention,
+        chatRespondWithoutMentionThreadIds:
+          chatEndpointResources.respondWithoutMentionThreadIds,
+        chatExternalThreadId: chatConversations.externalThreadId,
         externalConversationState: externalConversationStateSql(),
         conversationAgentId: issues.conversationAgentId,
         conversationUserId: issues.conversationUserId,
@@ -20832,7 +20836,14 @@ export function heartbeatService(
               captured: issueContext.chatCommunicationGuidance,
               provider: issueContext.chatProvider,
               isDirectMessage: issueContext.chatIsDirectMessage,
-              respondWithoutMention: issueContext.chatRespondWithoutMention,
+              // Ambient guidance only for conversations in the destination's
+              // allowed forum topics (no list = the whole group).
+              respondWithoutMention:
+                issueContext.chatRespondWithoutMention === true &&
+                telegramAmbientTopicAllowed(
+                  issueContext.chatRespondWithoutMentionThreadIds,
+                  issueContext.chatExternalThreadId ?? "",
+                ),
             })
           : null;
       const taskMarkdownInput = {

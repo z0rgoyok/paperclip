@@ -63104,6 +63104,159 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ]);
   });
 
+  it("limits Telegram ambient intake and its NO_REPLY guidance to the listed forum topics", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service, wakeup } =
+      await configuredTelegramEndpoint(fixture);
+    await db
+      .update(chatEndpoints)
+      .set({ status: "active" })
+      .where(eq(chatEndpoints.id, endpoint.id));
+    const chatId = "-10077110042";
+    const [resource] = await db
+      .insert(chatEndpointResources)
+      .values({
+        companyId: fixture.companyId,
+        endpointId: endpoint.id,
+        type: "chat",
+        providerResourceId: chatId,
+        label: "Telegram forum",
+        availability: "available",
+        enabled: true,
+      })
+      .returning();
+    const [directResource] = await db
+      .insert(chatEndpointResources)
+      .values({
+        companyId: fixture.companyId,
+        endpointId: endpoint.id,
+        type: "direct_message",
+        providerResourceId: "77110042",
+        label: "Telegram DM",
+        availability: "available",
+        enabled: true,
+      })
+      .returning();
+    await expect(
+      service.replaceResources(endpoint.id, [
+        {
+          id: directResource!.id,
+          enabled: true,
+          respondWithoutMentionThreadIds: ["42"],
+        },
+      ]),
+    ).rejects.toMatchObject({ status: 422 });
+    const scoped = await service.replaceResources(endpoint.id, [
+      {
+        id: resource!.id,
+        enabled: true,
+        respondWithoutMention: true,
+        respondWithoutMentionThreadIds: [" 42", "42"],
+      },
+    ]);
+    expect(scoped.find((row) => row.id === resource!.id)).toMatchObject({
+      respondWithoutMention: true,
+      respondWithoutMentionThreadIds: ["42"],
+    });
+    // Omitting the list keeps it.
+    const kept = await service.replaceResources(endpoint.id, [
+      { id: resource!.id, enabled: true },
+    ]);
+    expect(kept.find((row) => row.id === resource!.id)).toMatchObject({
+      respondWithoutMentionThreadIds: ["42"],
+    });
+
+    const thread = (topic: string | null) =>
+      makeThread({
+        channelId: chatId,
+        id: topic ? `telegram:${chatId}:${topic}` : `telegram:${chatId}`,
+        name: "Telegram forum",
+      });
+    const listedTopic = thread("42");
+    const otherTopic = thread("7");
+    const generalTopic = thread(null);
+    const deliveryFor = (threadId: string, messageId: string) =>
+      db
+        .select()
+        .from(chatDeliveries)
+        .where(eq(chatDeliveries.providerEventId, `${threadId}:${messageId}`))
+        .then((rows) => rows[0] ?? null);
+    const guidanceFor = (threadId: string) =>
+      db
+        .select({ guidance: chatConversations.communicationGuidance })
+        .from(chatConversations)
+        .where(
+          and(
+            eq(chatConversations.endpointId, endpoint.id),
+            eq(chatConversations.externalThreadId, threadId),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+    const deliver = (
+      target: ReturnType<typeof makeThread>,
+      id: string,
+      trigger: ChatSdkMessageTrigger = "unaddressed_message",
+    ) =>
+      deliverMessage({
+        callbacks,
+        endpointId: endpoint.id,
+        provider: "telegram",
+        thread: target.thread,
+        message: makeMessage({
+          id: `${chatId}:${id}`,
+          text: `forum message ${id}`,
+          userId: "telegram-forum-user",
+          mentioned: trigger === "mention",
+        }),
+        trigger,
+      });
+
+    // Outside the list (another topic and General) a mention is still needed.
+    await deliver(otherTopic, "1");
+    await deliver(generalTopic, "2");
+    for (const [target, id] of [
+      [otherTopic, "1"],
+      [generalTopic, "2"],
+    ] as const)
+      expect(await deliveryFor(target.thread.id, `${chatId}:${id}`)).toMatchObject({
+        state: "filtered",
+        redactedError: "Message did not address the agent",
+      });
+    expect(wakeup).not.toHaveBeenCalled();
+
+    // A listed topic is ambient and its task is told about NO_REPLY.
+    await deliver(listedTopic, "3");
+    expect(
+      await deliveryFor(listedTopic.thread.id, `${chatId}:3`),
+    ).toMatchObject({ state: "processed" });
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    expect((await guidanceFor(listedTopic.thread.id))?.guidance).toContain(
+      "exactly NO_REPLY",
+    );
+
+    // A mention in an unlisted topic works as before, without ambient guidance.
+    await deliver(otherTopic, "4", "mention");
+    expect(
+      await deliveryFor(otherTopic.thread.id, `${chatId}:4`),
+    ).toMatchObject({ state: "processed" });
+    expect(
+      (await guidanceFor(otherTopic.thread.id))?.guidance ?? "",
+    ).not.toContain("NO_REPLY");
+
+    // An empty list restores whole-group intake.
+    const cleared = await service.replaceResources(endpoint.id, [
+      { id: resource!.id, enabled: true, respondWithoutMentionThreadIds: [] },
+    ]);
+    expect(cleared.find((row) => row.id === resource!.id)).toMatchObject({
+      respondWithoutMentionThreadIds: null,
+    });
+    await deliver(generalTopic, "5");
+    expect(
+      await deliveryFor(generalTopic.thread.id, `${chatId}:5`),
+    ).toMatchObject({ state: "processed" });
+  });
+
+
   it.each([
     "current",
     "restart",

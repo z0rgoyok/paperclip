@@ -138,6 +138,7 @@ import type {
 import {
   isAgentStatusInvokable,
   CHAT_PROVIDERS,
+  chatProviderSupportsToolActivity,
   isUuidLike,
   LOW_TRUST_REVIEW_PRESET,
   LOW_TRUST_REVIEW_PRESET_VERSION,
@@ -265,6 +266,10 @@ import {
   projectSafeChatPublication,
 } from "./chat-publication-projection.js";
 import { safeChatTaskUrl } from "./chat-task-url.js";
+import {
+  normalizeTelegramAmbientThreadIds,
+  telegramAmbientTopicAllowed,
+} from "./telegram-ambient-topics.js";
 import {
   resyncGitHubAppWebhook,
   listGitHubAppWebhookDeliveries,
@@ -1714,34 +1719,44 @@ function chatSurfaceKind(
 }
 
 /**
- * Teams group chats are admitted as a class: installation at the provider and
- * the endpoint's group-chat toggle are the two gates the operator can
- * actually control. Teams channels, and every other non-DM destination,
- * retain the explicit per-resource enablement gate shown in Settings.
- */
-/**
- * Telegram ambient group intake: an enabled, available group/topic destination
- * that the operator opted into respondWithoutMention treats every human
- * message as addressed to the agent.
+ * Telegram ambient group intake: an enabled, available group destination that
+ * the operator opted into respondWithoutMention treats every human message in
+ * the thread as addressed to the agent. A non-empty topic list limits this to
+ * those forum topics; other topics keep the mention/command/reply contract.
  */
 export function telegramAmbientMessageAdmitted(
   resource:
     | Pick<
         ResourceRow,
-        "type" | "enabled" | "availability" | "respondWithoutMention"
+        | "type"
+        | "enabled"
+        | "availability"
+        | "respondWithoutMention"
+        | "respondWithoutMentionThreadIds"
       >
     | null
     | undefined,
+  threadId: string,
 ): boolean {
   return (
     !!resource &&
     resource.type !== "direct_message" &&
     resource.enabled &&
     resource.availability === "available" &&
-    resource.respondWithoutMention === true
+    resource.respondWithoutMention === true &&
+    telegramAmbientTopicAllowed(
+      resource.respondWithoutMentionThreadIds,
+      threadId,
+    )
   );
 }
 
+/**
+ * Teams group chats are admitted as a class: installation at the provider and
+ * the endpoint's group-chat toggle are the two gates the operator can
+ * actually control. Teams channels, and every other non-DM destination,
+ * retain the explicit per-resource enablement gate shown in Settings.
+ */
 function nonDirectDestinationAllowed(
   endpoint: EndpointRow,
   resource: ResourceRow | null | undefined,
@@ -14959,7 +14974,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         // performs first-setup activation: only an explicit mention can.
         if (
           !addressed &&
-          telegramAmbientMessageAdmitted(resource) &&
+          telegramAmbientMessageAdmitted(resource, thread.id) &&
           !message.author.isBot &&
           !message.author.isMe
         )
@@ -16102,7 +16117,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 provider: taskEndpoint.provider,
                 isDirectMessage: thread.isDM,
                 communicationInstructions: taskEndpoint.communicationInstructions,
-                respondWithoutMention: resource.respondWithoutMention,
+                respondWithoutMention: telegramAmbientMessageAdmitted(
+                  resource,
+                  thread.id,
+                ),
               }),
               state: "active",
               lastActivityAt: new Date(),
@@ -27988,6 +28006,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       id: string;
       enabled: boolean;
       respondWithoutMention?: boolean;
+      respondWithoutMentionThreadIds?: string[] | null;
+      showToolActivity?: boolean;
     }>,
     actorUserId?: string | null,
   ) {
@@ -28026,6 +28046,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               enabled: chatEndpointResources.enabled,
               respondWithoutMention:
                 chatEndpointResources.respondWithoutMention,
+              respondWithoutMentionThreadIds:
+                chatEndpointResources.respondWithoutMentionThreadIds,
+              showToolActivity: chatEndpointResources.showToolActivity,
             })
             .from(chatEndpointResources)
             .where(
@@ -28053,53 +28076,98 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               "A destination must still be available from the provider before it can be enabled",
               { code: "chat_resource_unavailable", resourceId: unavailable.id },
             );
-          // Ambient group intake is a Telegram group/topic policy. Other
-          // providers and direct messages keep their addressing contract.
+          // Ambient group intake (and its forum-topic scope) is a Telegram
+          // group policy. Other providers and direct messages keep their
+          // addressing contract.
           const typeById = new Map(rows.map((row) => [row.id, row.type]));
+          const telegramGroup = (id: string) =>
+            endpoint.provider === "telegram" &&
+            typeById.get(id) !== "direct_message";
           const ambientRejected = updates.find(
             (entry) =>
-              entry.respondWithoutMention === true &&
-              (endpoint.provider !== "telegram" ||
-                typeById.get(entry.id) === "direct_message"),
+              entry.respondWithoutMention === true && !telegramGroup(entry.id),
           );
           if (ambientRejected)
             throw unprocessable(
               "Responding without a mention is supported only for Telegram group destinations",
             );
-          const finalEnabled = new Map(
-            updates.map((entry) => [entry.id, entry.enabled]),
+          const topicsRejected = updates.find(
+            (entry) =>
+              normalizeTelegramAmbientThreadIds(
+                entry.respondWithoutMentionThreadIds,
+              ) !== null && !telegramGroup(entry.id),
           );
-          const finalAmbient = new Map<string, boolean>();
-          for (const entry of updates)
-            if (entry.respondWithoutMention !== undefined)
-              finalAmbient.set(entry.id, entry.respondWithoutMention);
-          const changes = rows
-            .filter(
-              (row) =>
-                row.enabled !== finalEnabled.get(row.id) ||
-                (finalAmbient.has(row.id) &&
-                  row.respondWithoutMention !== finalAmbient.get(row.id)),
-            )
-            .map((row) => {
-              const ambientChanged =
-                finalAmbient.has(row.id) &&
-                row.respondWithoutMention !== finalAmbient.get(row.id);
-              return {
-                resourceId: row.id,
-                before: {
-                  enabled: row.enabled,
-                  ...(ambientChanged
-                    ? { respondWithoutMention: row.respondWithoutMention }
-                    : {}),
-                },
-                after: {
-                  enabled: finalEnabled.get(row.id)!,
-                  ...(ambientChanged
-                    ? { respondWithoutMention: finalAmbient.get(row.id)! }
-                    : {}),
-                },
-              };
+          if (topicsRejected)
+            throw unprocessable(
+              "Topic scope for responding without a mention is supported only for Telegram group destinations",
+            );
+          // The live tool activity message is edited in place, so it needs a
+          // provider that can edit its own messages.
+          const toolActivityRejected = updates.find(
+            (entry) =>
+              entry.showToolActivity === true &&
+              !chatProviderSupportsToolActivity(endpoint.provider),
+          );
+          if (toolActivityRejected)
+            throw unprocessable(
+              "Tool activity is supported only for Telegram, Slack, Discord, and Microsoft Teams destinations",
+            );
+          type ResourceSettings = {
+            enabled: boolean;
+            respondWithoutMention: boolean;
+            respondWithoutMentionThreadIds: string[] | null;
+            showToolActivity: boolean;
+          };
+          const settingKeys = [
+            "enabled",
+            "respondWithoutMention",
+            "respondWithoutMentionThreadIds",
+            "showToolActivity",
+          ] as const;
+          const settingsEqual = (
+            key: (typeof settingKeys)[number],
+            left: ResourceSettings,
+            right: ResourceSettings,
+          ) =>
+            JSON.stringify(left[key] ?? null) ===
+            JSON.stringify(right[key] ?? null);
+          const finalSettings = new Map<string, ResourceSettings>();
+          for (const entry of updates) {
+            // Duplicate entries apply in order, exactly like the updates.
+            const row =
+              finalSettings.get(entry.id) ??
+              rows.find((candidate) => candidate.id === entry.id)!;
+            finalSettings.set(entry.id, {
+              enabled: entry.enabled,
+              respondWithoutMention:
+                entry.respondWithoutMention ?? row.respondWithoutMention,
+              respondWithoutMentionThreadIds:
+                entry.respondWithoutMentionThreadIds !== undefined
+                  ? normalizeTelegramAmbientThreadIds(
+                      entry.respondWithoutMentionThreadIds,
+                    )
+                  : row.respondWithoutMentionThreadIds,
+              showToolActivity:
+                entry.showToolActivity ?? row.showToolActivity,
             });
+          }
+          const changes = rows.flatMap((row) => {
+            const after = finalSettings.get(row.id);
+            if (!after) return [];
+            const changed = settingKeys.filter(
+              (key) => !settingsEqual(key, row, after),
+            );
+            if (changed.length === 0) return [];
+            // `enabled` is always recorded; the other settings only when they
+            // changed, so existing enabled-only receipts keep their shape.
+            const pick = (settings: ResourceSettings) =>
+              Object.fromEntries(
+                settingKeys
+                  .filter((key) => key === "enabled" || changed.includes(key))
+                  .map((key) => [key, settings[key]]),
+              );
+            return [{ resourceId: row.id, before: pick(row), after: pick(after) }];
+          });
           for (const entry of updates)
             await tx
               .update(chatEndpointResources)
@@ -28107,6 +28175,17 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 enabled: entry.enabled,
                 ...(entry.respondWithoutMention !== undefined
                   ? { respondWithoutMention: entry.respondWithoutMention }
+                  : {}),
+                ...(entry.respondWithoutMentionThreadIds !== undefined
+                  ? {
+                      respondWithoutMentionThreadIds:
+                        normalizeTelegramAmbientThreadIds(
+                          entry.respondWithoutMentionThreadIds,
+                        ),
+                    }
+                  : {}),
+                ...(entry.showToolActivity !== undefined
+                  ? { showToolActivity: entry.showToolActivity }
                   : {}),
                 updatedAt: new Date(),
               })
@@ -34176,7 +34255,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     const row = await db
       .select({
         isDirectMessage: chatConversations.isDirectMessage,
+        externalThreadId: chatConversations.externalThreadId,
         respondWithoutMention: chatEndpointResources.respondWithoutMention,
+        respondWithoutMentionThreadIds:
+          chatEndpointResources.respondWithoutMentionThreadIds,
       })
       .from(chatConversations)
       .innerJoin(
@@ -34188,7 +34270,15 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       )
       .where(eq(chatConversations.id, conversationId))
       .then((rows) => rows[0] ?? null);
-    return Boolean(row && !row.isDirectMessage && row.respondWithoutMention);
+    return Boolean(
+      row &&
+        !row.isDirectMessage &&
+        row.respondWithoutMention &&
+        telegramAmbientTopicAllowed(
+          row.respondWithoutMentionThreadIds,
+          row.externalThreadId,
+        ),
+    );
   }
 
   async function runOwnershipMilestoneSupersessionReason(
