@@ -156,6 +156,7 @@ import {
   isChatPublicationCommitSignal,
 } from "./services/chat-publication-reconciliation.js";
 import { subscribeAllCompanyLiveEvents } from "./services/live-events.js";
+import { subscribeRunOutputChunks } from "./services/run-output-tap.js";
 import { heartbeatService } from "./services/heartbeat.js";
 import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
 import { createPluginJobCoordinator } from "./services/plugin-job-coordinator.js";
@@ -1178,6 +1179,10 @@ export async function createApp(
       logger.error({ err, lane }, `Failed to reconcile chat ${lane}`);
     },
   });
+  // Direct-adapter run output feeds the opt-in chat tool activity message.
+  const unsubscribeChatToolActivity = subscribeRunOutputChunks((chunk) =>
+    chatChannels.observeRunOutput(chunk),
+  );
   const unsubscribeChatPublicationSignals = subscribeAllCompanyLiveEvents(
     (event) => {
       if (isChatPublicationCommitSignal(event))
@@ -1313,6 +1318,7 @@ export async function createApp(
       jobCoordinator.stop();
       disableFeedbackExportFlushes();
       unsubscribeChatPublicationSignals();
+      unsubscribeChatToolActivity();
       chatReconciliation.stop();
       if (chatPublicationTimer) {
         clearInterval(chatPublicationTimer);

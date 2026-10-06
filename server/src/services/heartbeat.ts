@@ -5,6 +5,10 @@ import { settleSlackConversation } from "./slack-conversation-lifecycle.js";
 import { publicChatTaskUrl } from "./chat-task-url.js";
 import { effectiveChatCommunicationGuidance } from "./chat-communication-guidance.js";
 import { telegramAmbientTopicAllowed } from "./telegram-ambient-topics.js";
+import {
+  hasRunOutputObservers,
+  publishRunOutputChunk,
+} from "./run-output-tap.js";
 import { toolActionDeliveryService } from "./tool-action-delivery.js";
 import { githubBotConnectionIdsForRun } from "./chat-github-tools.js";
 import { readQueuedInteractionResponse } from "./queued-interaction-response.js";
@@ -22841,6 +22845,15 @@ export function heartbeatService(
 
         const currentUserRedactionOptions =
           await getCurrentUserRedactionOptions();
+        // Resolved secret env values, so chat-facing tool activity can mask
+        // them by value. Read lazily: runtimeConfig is still being finalized.
+        const runSecretEnvValues = (): string[] => {
+          const env = parseObject(runtimeConfig.env);
+          return [...secretKeys].flatMap((key) => {
+            const value = env[key];
+            return typeof value === "string" && value ? [value] : [];
+          });
+        };
         const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
           const sanitizedChunk = compactRunLogChunk(
             redactCurrentUserText(chunk, currentUserRedactionOptions),
@@ -22850,6 +22863,19 @@ export function heartbeatService(
           if (stream === "stderr")
             stderrExcerpt = appendExcerpt(stderrExcerpt, sanitizedChunk);
           const ts = new Date().toISOString();
+          // Live tool activity for chat destinations reads the same sanitized
+          // stream; it only enqueues and never blocks or fails the run.
+          if (hasRunOutputObservers())
+            publishRunOutputChunk({
+              companyId: run.companyId,
+              runId: run.id,
+              agentId: run.agentId,
+              issueId: issueId ?? null,
+              adapterType: agent.adapterType,
+              stream,
+              chunk: sanitizedChunk,
+              secretValues: runSecretEnvValues,
+            });
 
           outputSeq += 1;
           const chunkSeq = outputSeq;

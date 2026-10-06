@@ -255,7 +255,15 @@ import {
   queueIssueAssignmentWakeup,
   type IssueAssignmentWakeupDeps,
 } from "./issue-assignment-wakeup.js";
-import { issueService } from "./issues.js";
+import {
+  issueService,
+  resolveChatOriginPublicationBindings,
+} from "./issues.js";
+import {
+  ChatToolActivityRelay,
+  type ToolActivityRunRef,
+} from "./chat-tool-activity.js";
+import type { RunOutputChunk } from "./run-output-tap.js";
 import {
   authorizeNativeChatReviewPresentation,
   NativeChatReviewPresentationContentionError,
@@ -1455,6 +1463,8 @@ export interface ChatChannelServiceOptions {
     token: string;
   }) => Promise<boolean>;
   fetch?: typeof globalThis.fetch;
+  /** Test override for the tool activity message's minimum edit spacing. */
+  toolActivityMinEditIntervalMs?: number;
   /** Test-only private upload transport; production retains guarded egress. */
   teamsFileUploadRequest?: TeamsFileTransferOptions["uploadRequest"];
   heartbeat: IssueAssignmentWakeupDeps & {
@@ -37333,6 +37343,153 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     }
   }
 
+  type ToolActivityDestination = {
+    conversationId: string;
+    endpointId: string;
+    externalThreadId: string;
+  };
+
+  /**
+   * Conversations that show a run's live tool activity: the run's verified
+   * chat origin (the same causal binding that authorizes its final reply),
+   * for the endpoint's assigned agent, on an active automatic endpoint whose
+   * destination opted into showToolActivity.
+   */
+  async function toolActivityDestinations(
+    run: ToolActivityRunRef,
+  ): Promise<ToolActivityDestination[]> {
+    if (!run.issueId || !isUuidLike(run.issueId)) return [];
+    const bindings = await resolveChatOriginPublicationBindings(
+      db,
+      run.companyId,
+      run.issueId,
+      run.runId,
+    );
+    if (bindings.length === 0) return [];
+    const rows = await db
+      .select({
+        conversationId: chatConversations.id,
+        endpointId: chatConversations.endpointId,
+        externalThreadId: chatConversations.externalThreadId,
+        provider: chatEndpoints.provider,
+      })
+      .from(chatConversations)
+      .innerJoin(
+        chatEndpoints,
+        and(
+          eq(chatEndpoints.companyId, chatConversations.companyId),
+          eq(chatEndpoints.id, chatConversations.endpointId),
+        ),
+      )
+      .innerJoin(
+        chatEndpointResources,
+        and(
+          eq(chatEndpointResources.companyId, chatConversations.companyId),
+          eq(chatEndpointResources.endpointId, chatConversations.endpointId),
+          eq(chatEndpointResources.id, chatConversations.resourceId),
+        ),
+      )
+      .where(
+        and(
+          eq(chatConversations.companyId, run.companyId),
+          eq(chatConversations.issueId, run.issueId),
+          inArray(
+            chatConversations.id,
+            bindings.map((binding) => binding.conversationId),
+          ),
+          inArray(chatConversations.state, ["active", "waiting"]),
+          eq(chatEndpoints.status, "active"),
+          eq(chatEndpoints.publicationMode, "automatic"),
+          eq(chatEndpoints.assignedAgentId, run.agentId),
+          eq(chatEndpointResources.showToolActivity, true),
+        ),
+      );
+    return rows.filter(
+      (row) =>
+        chatProviderSupportsToolActivity(row.provider) &&
+        bindings.some(
+          (binding) =>
+            binding.conversationId === row.conversationId &&
+            binding.endpointId === row.endpointId,
+        ),
+    );
+  }
+
+  async function toolActivityThread(destination: ToolActivityDestination) {
+    const record = await endpointRecord(destination.endpointId);
+    if (!record) throw new Error("Chat endpoint not found");
+    const endpointRuntime = await runtimeFor(record.endpoint);
+    return endpointRuntime.thread(destination.externalThreadId);
+  }
+
+  // Plain text (`raw`) so commands and paths are never re-rendered as Markdown.
+  const toolActivity = new ChatToolActivityRelay<ToolActivityDestination>({
+    resolveTargets: toolActivityDestinations,
+    minEditIntervalMs: options.toolActivityMinEditIntervalMs,
+    transport: {
+      post: async (destination, text) => {
+        const thread = await toolActivityThread(destination);
+        const sent = await thread.post({ raw: text });
+        return sent.id;
+      },
+      edit: async (destination, messageId, text) => {
+        const thread = await toolActivityThread(destination);
+        await thread.adapter.editMessage(thread.id, messageId, { raw: text });
+      },
+      remove: async (destination, messageId) => {
+        const thread = await toolActivityThread(destination);
+        if (typeof thread.adapter.deleteMessage !== "function") return false;
+        await thread.adapter.deleteMessage(thread.id, messageId);
+        return true;
+      },
+    },
+    onError: (error, context) =>
+      logger.warn(
+        { err: error, ...context },
+        "Chat tool activity update failed",
+      ),
+  });
+
+  /**
+   * Before an agent reply reaches a conversation that shows tool activity,
+   * let an in-flight activity post land first (so it stays above the reply),
+   * or delete the activity message when the reply is a silent NO_REPLY.
+   */
+  async function settleToolActivityBeforePublication(
+    publication: typeof chatPublications.$inferSelect,
+  ): Promise<void> {
+    if (
+      publication.payload.progressState ||
+      !publication.commentId ||
+      !toolActivity.tracksConversation(publication.conversationId)
+    )
+      return;
+    try {
+      const runId = await db
+        .select({ runId: issueComments.createdByRunId })
+        .from(issueComments)
+        .where(
+          and(
+            eq(issueComments.companyId, publication.companyId),
+            eq(issueComments.id, publication.commentId),
+          ),
+        )
+        .then((rows) => rows[0]?.runId ?? null);
+      await toolActivity.settle({
+        conversationId: publication.conversationId,
+        runId,
+        silent:
+          !isExplicitOperatorPublication(publication) &&
+          isSilentChatReplyPayload(publication.payload),
+      });
+    } catch (error) {
+      logger.warn(
+        { err: error, publicationId: publication.id },
+        "Chat tool activity settle failed",
+      );
+    }
+  }
+
   /**
    * An agent answered with exactly the silent marker (`NO_REPLY`). Settle the
    * publication as cancelled before any transport preparation so nothing is
@@ -37381,6 +37538,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   async function processSelectedPublication(
     selectedPublication: typeof chatPublications.$inferSelect,
   ): Promise<void> {
+    await settleToolActivityBeforePublication(selectedPublication);
     if (await settleSilentPublication(selectedPublication)) return;
     let publication: typeof chatPublications.$inferSelect;
     try {
@@ -38681,8 +38839,13 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     processPendingSlackSessionStops,
     processPendingSlackSessionSyncs,
     getIssueBinding,
+    /** Feed one direct-adapter run output chunk to the tool activity relay. */
+    observeRunOutput: (chunk: RunOutputChunk) => toolActivity.observe(chunk),
+    /** Test helper: process queued output and send pending activity edits. */
+    flushToolActivity: () => toolActivity.flush(),
     shutdown: async () => {
       shuttingDown = true;
+      toolActivity.dispose();
       await Promise.allSettled([...failedRetryTasks.values()]);
       unregisterFailedRetryAuthority();
       unregisterSlackTaskAuthority();

@@ -230,6 +230,10 @@ class FakeEndpointRuntime {
     threadId: string;
     messageId: string;
   }> = [];
+  readonly deletes: Array<{
+    threadId: string;
+    messageId: string;
+  }> = [];
   readonly reactions: Array<{
     threadId: string;
     messageId: string;
@@ -473,13 +477,21 @@ class FakeEndpointRuntime {
             typeof editedMessage === "object" &&
             "markdown" in editedMessage
               ? String((editedMessage as { markdown: unknown }).markdown)
-              : JSON.stringify(editedMessage);
+              : editedMessage &&
+                  typeof editedMessage === "object" &&
+                  "raw" in editedMessage
+                ? String((editedMessage as { raw: unknown }).raw)
+                : JSON.stringify(editedMessage);
           this.edits.push({
             threadId: editedThreadId,
             messageId,
             text,
           });
           return { id: messageId, threadId: editedThreadId };
+        },
+        deleteMessage: async (deletedThreadId: string, messageId: string) => {
+          if (this.postError) throw this.postError;
+          this.deletes.push({ threadId: deletedThreadId, messageId });
         },
       },
       startTyping: async () => undefined,
@@ -507,6 +519,12 @@ class FakeEndpointRuntime {
           "markdown" in message
         ) {
           text = String((message as { markdown: unknown }).markdown);
+        } else if (
+          message &&
+          typeof message === "object" &&
+          "raw" in message
+        ) {
+          text = String((message as { raw: unknown }).raw);
         } else text = JSON.stringify(message);
         if (
           message &&
@@ -1216,6 +1234,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         | "setupTestActivationBarrier"
         | "storage"
         | "reachAuthorizationBarrier"
+        | "toolActivityMinEditIntervalMs"
       >
     > & {
       cancelRun?: NonNullable<
@@ -63256,6 +63275,175 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ).toMatchObject({ state: "processed" });
   });
 
+  it("relays one live tool activity message per run, masks secrets, and deletes it for NO_REPLY", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service } =
+      await configuredTelegramEndpoint(fixture, {
+        toolActivityMinEditIntervalMs: 0,
+      });
+    await db
+      .update(chatEndpoints)
+      .set({ status: "active" })
+      .where(eq(chatEndpoints.id, endpoint.id));
+    const chatId = "-10077110077";
+    const [resource] = await db
+      .insert(chatEndpointResources)
+      .values({
+        companyId: fixture.companyId,
+        endpointId: endpoint.id,
+        type: "chat",
+        providerResourceId: chatId,
+        label: "Telegram tools group",
+        availability: "available",
+        enabled: true,
+      })
+      .returning();
+    const group = makeThread({
+      channelId: chatId,
+      id: `telegram:${chatId}`,
+      name: "Telegram tools group",
+    });
+    for (const id of ["1", "2", "3", "4"])
+      await deliverMessage({
+        callbacks,
+        endpointId: endpoint.id,
+        provider: "telegram",
+        thread: group.thread,
+        message: makeMessage({
+          id: `${chatId}:${id}`,
+          text: `@maya run step ${id}`,
+          userId: "telegram-tools-user",
+          mentioned: true,
+        }),
+        trigger: "mention",
+      });
+    const [conversation] = await service.listConversations(endpoint.id);
+    if (!conversation) throw new Error("Expected Telegram tools conversation");
+    const providerRuntime = runtime.endpoints.get(endpoint.id);
+    if (!providerRuntime) throw new Error("Expected Telegram provider runtime");
+    providerRuntime.posts.length = 0;
+    providerRuntime.edits.length = 0;
+
+    const botToken = "7123456789:AAH4k3Jx9qLmNoPqRsTuVwXyZaBcDeFgHiJ";
+    const command = (id: string, cmd: string) =>
+      `${JSON.stringify({ type: "item.started", item: { id, type: "command_execution", command: cmd, status: "in_progress" } })}\n`;
+    const startRun = async (providerMessageId: string) => {
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId: fixture.companyId,
+        agentId: endpoint.assignedAgentId,
+        status: "succeeded",
+        contextSnapshot: await chatWakeContext({
+          endpointId: endpoint.id,
+          issueId: conversation.issueId,
+          provider: "telegram",
+          providerMessageId,
+        }),
+        resultJson: {
+          presentationDecision: {
+            chosenSource: "final_agent_message",
+            commentAction: "create",
+            reasonCodes: [],
+          },
+        },
+      });
+      const output = async (chunk: string) => {
+        service.observeRunOutput({
+          companyId: fixture.companyId,
+          runId,
+          agentId: endpoint.assignedAgentId,
+          issueId: conversation.issueId,
+          adapterType: "codex_local",
+          stream: "stdout",
+          chunk,
+          secretValues: () => ["hunter2-database-pass"],
+        });
+        await service.flushToolActivity();
+      };
+      const finish = async (body: string) => {
+        await addSelectedChatFinal({
+          agentId: endpoint.assignedAgentId,
+          body,
+          companyId: fixture.companyId,
+          issueId: conversation.issueId,
+          runId,
+        });
+        await enqueueChatRunMilestones(db);
+        await service.processPendingPublications();
+      };
+      return { output, finish };
+    };
+
+    // Flag off: tool calls stay inside Paperclip.
+    const quiet = await startRun(`${chatId}:1`);
+    await quiet.output(command("q1", "git status"));
+    expect(providerRuntime.posts).toEqual([]);
+    await quiet.finish("Status is clean.");
+    expect(providerRuntime.posts).toEqual([
+      { threadId: group.thread.id, text: "Status is clean." },
+    ]);
+    providerRuntime.posts.length = 0;
+
+    const updated = await service.replaceResources(endpoint.id, [
+      { id: resource!.id, enabled: true, showToolActivity: true },
+    ]);
+    expect(updated.find((row) => row.id === resource!.id)).toMatchObject({
+      showToolActivity: true,
+    });
+
+    // No tool call, no activity message.
+    const plain = await startRun(`${chatId}:2`);
+    await plain.output(
+      `${JSON.stringify({ type: "item.completed", item: { id: "a", type: "agent_message", text: "thinking" } })}\n`,
+    );
+    expect(providerRuntime.posts).toEqual([]);
+    await plain.finish("Nothing to run.");
+    expect(providerRuntime.posts).toEqual([
+      { threadId: group.thread.id, text: "Nothing to run." },
+    ]);
+    providerRuntime.posts.length = 0;
+
+    // Tool calls: one message, edited in place, secrets masked.
+    const silent = await startRun(`${chatId}:3`);
+    providerRuntime.postResultIds.push("activity-1");
+    await silent.output(
+      command("s1", `/bin/zsh -lc 'curl https://api.telegram.org/bot${botToken}/getMe'`),
+    );
+    expect(providerRuntime.posts).toHaveLength(1);
+    const [activity] = providerRuntime.posts;
+    expect(activity).toEqual({
+      threadId: group.thread.id,
+      text: "🔧 shell: curl https://api.telegram.org/bot***/getMe",
+    });
+    await silent.output(command("s2", "psql -c 'select 1' hunter2-database-pass"));
+    expect(providerRuntime.posts).toHaveLength(1);
+    expect(providerRuntime.edits).toEqual([
+      {
+        threadId: group.thread.id,
+        messageId: "activity-1",
+        text: "🔧 shell: curl https://api.telegram.org/bot***/getMe\n🔧 shell: psql -c 'select 1' ***",
+      },
+    ]);
+    expect(JSON.stringify(providerRuntime.edits)).not.toContain("AAH4k3");
+
+    // NO_REPLY removes the activity message and sends nothing else.
+    await silent.finish("NO_REPLY");
+    expect(providerRuntime.deletes).toEqual([
+      { threadId: group.thread.id, messageId: "activity-1" },
+    ]);
+    expect(providerRuntime.posts).toHaveLength(1);
+
+    // An ordinary reply keeps the activity message above it.
+    const answered = await startRun(`${chatId}:4`);
+    await answered.output(command("a1", "pnpm test"));
+    await answered.finish("Tests pass.");
+    expect(providerRuntime.posts.slice(1)).toEqual([
+      { threadId: group.thread.id, text: "🔧 shell: pnpm test" },
+      { threadId: group.thread.id, text: "Tests pass." },
+    ]);
+    expect(providerRuntime.deletes).toHaveLength(1);
+  });
 
   it.each([
     "current",
