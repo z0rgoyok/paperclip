@@ -3,6 +3,7 @@ import type { Issue } from "@paperclipai/shared";
 import {
   ISSUES_ROW_PRESENTATION,
   ISSUES_TOOLBAR_PRESENTATION,
+  buildIssuesChatConversationsUrl,
   buildIssuesSearchUrl,
   getNextIssuesPageOffset,
   mergeIssuePagesStable,
@@ -24,6 +25,21 @@ describe("buildIssuesSearchUrl", () => {
 
   it("returns null when the URL already matches the current search", () => {
     expect(buildIssuesSearchUrl("http://localhost:3100/issues?q=bug+", "bug ")).toBeNull();
+  });
+});
+
+describe("buildIssuesChatConversationsUrl", () => {
+  it("adds the chats param and keeps the other params", () => {
+    expect(buildIssuesChatConversationsUrl("http://localhost:3100/issues?q=bug#top", true)).toBe("/issues?q=bug&chats=1#top");
+  });
+
+  it("removes the chats param when hidden again", () => {
+    expect(buildIssuesChatConversationsUrl("http://localhost:3100/issues?chats=1", false)).toBe("/issues");
+  });
+
+  it("returns null when the URL already matches", () => {
+    expect(buildIssuesChatConversationsUrl("http://localhost:3100/issues?chats=1", true)).toBeNull();
+    expect(buildIssuesChatConversationsUrl("http://localhost:3100/issues", false)).toBeNull();
   });
 });
 

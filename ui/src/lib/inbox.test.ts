@@ -296,6 +296,7 @@ const dashboard: DashboardSummary = {
     blocked: 0,
     done: 0,
   },
+  chatConversations: { open: 0, inProgress: 0 },
   costs: {
     monthSpendCents: 900,
     monthBudgetCents: 1000,

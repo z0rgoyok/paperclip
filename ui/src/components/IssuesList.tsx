@@ -486,6 +486,9 @@ interface IssuesListProps {
    */
   parentIssueIdForCostSummary?: string;
   enableRoutineVisibilityFilter?: boolean;
+  /** Owner of the list query toggles chat conversations; the list only renders the control. */
+  showChatConversations?: boolean;
+  onShowChatConversationsChange?: (show: boolean) => void;
   hasMoreIssues?: boolean;
   isLoadingMoreIssues?: boolean;
   mutedIssueIds?: Set<string>;
@@ -720,6 +723,8 @@ function StreamlinedIssuesList({
   showProgressSummary = false,
   parentIssueIdForCostSummary,
   enableRoutineVisibilityFilter = false,
+  showChatConversations = false,
+  onShowChatConversationsChange,
   hasMoreIssues = false,
   isLoadingMoreIssues = false,
   mutedIssueIds,
@@ -901,6 +906,7 @@ function StreamlinedIssuesList({
         "compact",
         ISSUE_BOARD_COLUMN_RESULT_LIMIT,
         enableRoutineVisibilityFilter ? "with-routine-executions" : "without-routine-executions",
+        showChatConversations ? "with-chat-conversations" : "without-chat-conversations",
       ],
       queryFn: ({ signal }: { signal: AbortSignal }) =>
         issuesApi.listCompact(selectedCompanyId!, {
@@ -910,6 +916,7 @@ function StreamlinedIssuesList({
           status,
           limit: ISSUE_BOARD_COLUMN_RESULT_LIMIT,
           ...(enableRoutineVisibilityFilter ? { includeRoutineExecutions: true } : {}),
+          ...(showChatConversations ? { includeChatConversations: true } : {}),
         }, { signal }).then((rows) => rows as Issue[]),
       enabled: !!selectedCompanyId && viewState.viewMode === "board" && !searchWithinLoadedIssues,
       placeholderData: (previousData: Issue[] | undefined) => previousData,
@@ -1246,7 +1253,7 @@ function StreamlinedIssuesList({
     enabled: !!selectedCompanyId,
   });
 
-  const activeFilterCount = countActiveIssueFilters(viewState, enableRoutineVisibilityFilter);
+  const activeFilterCount = countActiveIssueFilters(viewState, enableRoutineVisibilityFilter) + (showChatConversations ? 1 : 0);
   const boardHighVolume = viewState.viewMode === "board" && filtered.length > KANBAN_BOARD_HIGH_VOLUME_THRESHOLD;
   const boardCompactCards =
     viewState.boardCardDensity === "compact"
@@ -1882,6 +1889,8 @@ function StreamlinedIssuesList({
             currentUserId={currentUserId}
             enableExternalObjectFilters={externalObjectsEnabled}
             enableRoutineVisibilityFilter={enableRoutineVisibilityFilter}
+            showChatConversations={showChatConversations}
+            onShowChatConversationsChange={onShowChatConversationsChange}
             iconOnly
             workspaces={isolatedWorkspacesEnabled ? workspaceOptions : undefined}
             presentation={rowPresentation === "task" ? "streamlined" : "legacy"}

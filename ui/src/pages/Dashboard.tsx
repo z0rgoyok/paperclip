@@ -420,6 +420,7 @@ export function Dashboard() {
                 <span>
                   {data.tasks.open} open{", "}
                   {data.tasks.blocked} blocked
+                  {data.chatConversations.open > 0 ? `, ${data.chatConversations.open} chats not counted` : null}
                 </span>
               }
             />

@@ -65,6 +65,20 @@ export function buildIssuesSearchUrl(currentHref: string, search: string): strin
   return `${url.pathname}${url.search}${url.hash}`;
 }
 
+export function buildIssuesChatConversationsUrl(currentHref: string, show: boolean): string | null {
+  const url = new URL(currentHref);
+  const current = url.searchParams.get("chats") === "1";
+  if (current === show) return null;
+
+  if (show) {
+    url.searchParams.set("chats", "1");
+  } else {
+    url.searchParams.delete("chats");
+  }
+
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
 export function Issues() {
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const issuesPresentation = resolveIssuesPresentation(streamlinedUiEnabled);
@@ -86,6 +100,12 @@ export function Issues() {
   const participantAgentId = searchParams.get("participantAgentId") ?? undefined;
   const initialWorkspaces = searchParams.getAll("workspace").filter((workspaceId) => workspaceId.length > 0);
   const workspaceIdFilter = initialWorkspaces.length === 1 ? initialWorkspaces[0] : undefined;
+  const [showChatConversations, setShowChatConversations] = useState(searchParams.get("chats") === "1");
+  const handleShowChatConversationsChange = useCallback((show: boolean) => {
+    const nextUrl = buildIssuesChatConversationsUrl(window.location.href, show);
+    if (nextUrl) window.history.replaceState(window.history.state, "", nextUrl);
+    setShowChatConversations(show);
+  }, []);
   const handleSearchChange = useCallback((search: string) => {
     const nextUrl = buildIssuesSearchUrl(window.location.href, search);
     if (!nextUrl) {
@@ -158,6 +178,7 @@ export function Issues() {
       workspaceIdFilter ?? "__all__",
       "compact",
       "with-routine-executions",
+      showChatConversations ? "with-chat-conversations" : "without-chat-conversations",
       "infinite",
       issuePageSize,
     ],
@@ -165,6 +186,7 @@ export function Issues() {
       participantAgentId,
       workspaceId: workspaceIdFilter,
       includeRoutineExecutions: true,
+      ...(showChatConversations ? { includeChatConversations: true } : {}),
       limit: issuePageSize,
       offset: pageParam,
       sortField: "updated",
@@ -226,6 +248,8 @@ export function Issues() {
       initialSearch={syncedSearch}
       onSearchChange={handleSearchChange}
       enableRoutineVisibilityFilter
+      showChatConversations={showChatConversations}
+      onShowChatConversationsChange={handleShowChatConversationsChange}
       hasMoreIssues={hasMoreServerIssues}
       onLoadMoreIssues={loadMoreServerIssues}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}

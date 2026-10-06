@@ -1308,6 +1308,7 @@ export const storybookDashboardSummary: DashboardSummary = {
     blocked: 1,
     done: 36,
   },
+  chatConversations: { open: 2, inProgress: 1 },
   costs: {
     monthSpendCents: 67_500,
     monthBudgetCents: 250_000,

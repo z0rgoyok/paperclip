@@ -120,6 +120,8 @@ export function IssueFiltersPopover({
   creators,
   presentation = "legacy",
   inboxScopeFilters,
+  showChatConversations,
+  onShowChatConversationsChange,
 }: {
   state: IssueFilterState;
   onChange: (patch: Partial<IssueFilterState>) => void;
@@ -136,6 +138,9 @@ export function IssueFiltersPopover({
   creators?: CreatorOption[];
   presentation?: "legacy" | "streamlined";
   inboxScopeFilters?: InboxScopeFilters;
+  /** Chat conversations are hidden from task lists unless this is on. */
+  showChatConversations?: boolean;
+  onShowChatConversationsChange?: (show: boolean) => void;
 }) {
   const streamlined = presentation === "streamlined";
   const [creatorSearch, setCreatorSearch] = useState("");
@@ -560,6 +565,15 @@ export function IssueFiltersPopover({
                       onCheckedChange={(checked) => onChange({ hideRoutineExecutions: checked === true })}
                     />
                     <span className="text-sm">Hide routine runs</span>
+                  </label>
+                ) : null}
+                {onShowChatConversationsChange ? (
+                  <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
+                    <Checkbox
+                      checked={showChatConversations === true}
+                      onCheckedChange={(checked) => onShowChatConversationsChange(checked === true)}
+                    />
+                    <span className="text-sm">Show chat conversations</span>
                   </label>
                 ) : null}
               </div>
