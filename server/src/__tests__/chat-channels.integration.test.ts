@@ -47947,6 +47947,59 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         }
       });
 
+      it("authorizes an exact Hermes steering receipt after close and denies forged receipt boundaries", async () => {
+        const f = await reopenedFixture();
+        try {
+          await db.update(agents).set({ adapterType: "hermes_gateway" })
+            .where(eq(agents.id, f.fixture.assignedAgentId));
+          await db.update(heartbeatRuns).set({ runtimeMode: "legacy", nativeIssueId: null })
+            .where(eq(heartbeatRuns.id, f.fresh.runId));
+          const messageId = freshDiscordMessageId();
+          const message = makeMessage({ id: messageId, text: "@maya new guidance during the run",
+            mentioned: true, userId: externalUserId });
+          message.metadata.dateSent = new Date(Number((BigInt(messageId) >> 22n) + 1420070400000n));
+          const delivery = await f.admitMessage(message);
+          const context = await chatWakeContext({ endpointId: f.endpoint.id, issueId: f.conversation.issueId,
+            provider: "discord", providerMessageId: messageId });
+          const [action] = await db.select().from(chatActions).where(and(
+            eq(chatActions.deliveryId, delivery.id), eq(chatActions.kind, "inbound_wakeup")));
+          const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, action.id));
+          const payload = { ...receipt.payload,
+            adapterSteering: { runId: f.fresh.runId, commentId: context.wakeCommentId } };
+          await db.update(agentWakeupRequests).set({ runId: f.fresh.runId, status: "coalesced", payload })
+            .where(eq(agentWakeupRequests.id, receipt.id));
+          await db.update(heartbeatRuns).set({ contextSnapshot: { ...f.fresh.context,
+            endpointId: f.endpoint.id, paperclipHarnessCheckedOut: true,
+            wakeCommentIds: [f.fresh.context.wakeCommentId, context.wakeCommentId] } })
+            .where(eq(heartbeatRuns.id, f.fresh.runId));
+          const authority = () => resolveChatRunPresentationAuthorizationReason(db, {
+            companyId: f.fixture.companyId, issueId: f.conversation.issueId, runId: f.fresh.runId });
+          for (const patch of [
+            { payload: { ...payload, adapterSteering: { ...payload.adapterSteering, runId: randomUUID() } } },
+            { payload: { ...payload, adapterSteering: { ...payload.adapterSteering, commentId: randomUUID() } } },
+            { status: "queued" },
+            { requestedByActorId: "different-principal" },
+          ]) {
+            await db.update(agentWakeupRequests).set(patch).where(eq(agentWakeupRequests.id, receipt.id));
+            await expect(authority()).resolves.toBe("internal_agent_write");
+            await db.update(agentWakeupRequests).set({ payload, status: "coalesced",
+              requestedByActorId: receipt.requestedByActorId }).where(eq(agentWakeupRequests.id, receipt.id));
+          }
+          await expect(authority()).resolves.toBe("allow_chat_run_presentation");
+          await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() })
+            .where(eq(heartbeatRuns.id, f.fresh.runId));
+          const comment = await addSelectedChatFinal({ companyId: f.fixture.companyId,
+            issueId: f.conversation.issueId, agentId: f.fixture.assignedAgentId,
+            runId: f.fresh.runId, body: "HERMES-STEERED-AFTER-CLOSE" });
+          await f.service.processPendingPublications();
+          await enqueueChatRunMilestones(db);
+          await f.service.processPendingPublications();
+          const publications = await db.select().from(chatPublications).where(eq(chatPublications.commentId, comment.id));
+          expect(publications).toEqual([expect.objectContaining({ state: "published", attempts: 1 })]);
+          expect(f.runtime.get(f.endpoint.id)?.posts.filter(post => post.text === "HERMES-STEERED-AFTER-CLOSE")).toHaveLength(1);
+        } finally { await f.close(); }
+      });
+
       it("allows an admitted source sent after close command but before close confirmation to present", async () => {
         const f = await reopenedFixture();
         try {
@@ -64041,6 +64094,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       chunk: '[hermes-gateway:event] run=remote event=tool.started data={"tool":"terminal","preview":"git status"}\n' });
     await service.flushToolActivity();
     expect(providerRuntime.posts).toEqual([{ threadId: group.thread.id, text: "🔧 terminal: git status" }]);
+    await deliverMessage({ callbacks, endpointId: endpoint.id, provider: "telegram", thread: group.thread,
+      message: makeMessage({ id: `${chatId}:2`, text: "@maya updated guidance", userId: "hermes-order-user", mentioned: true }), trigger: "mention" });
+    const original = await chatWakeContext({ endpointId: endpoint.id, issueId: conversation.issueId,
+      provider: "telegram", providerMessageId: `${chatId}:1` });
+    const steered = await chatWakeContext({ endpointId: endpoint.id, issueId: conversation.issueId,
+      provider: "telegram", providerMessageId: `${chatId}:2` });
+    await db.update(heartbeatRuns).set({ contextSnapshot: { ...original,
+      wakeCommentIds: [original.wakeCommentId, steered.wakeCommentId] } }).where(eq(heartbeatRuns.id, runId));
     await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date(), resultJson: {
       presentationDecision: { chosenSource: "final_agent_message", commentAction: "create", reasonCodes: [] } } }).where(eq(heartbeatRuns.id, runId));
     await addSelectedChatFinal({ agentId: endpoint.assignedAgentId, body: "Hermes final below tools.",
@@ -64049,6 +64110,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await service.processPendingPublications();
     expect(providerRuntime.posts).toEqual([{ threadId: group.thread.id, text: "🔧 terminal: git status" },
       { threadId: group.thread.id, text: "Hermes final below tools." }]);
+    await enqueueChatRunMilestones(db);
+    await service.processPendingPublications();
+    expect(providerRuntime.posts).toHaveLength(2);
     expect(providerRuntime.edits).toEqual([]);
   });
 

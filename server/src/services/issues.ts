@@ -914,7 +914,18 @@ async function freshChatSourceAfterPublishedControl(
         ),
         isNull(issueComments.deletedAt),
         sql`${issueComments.updatedAt} = ${issueComments.createdAt}`,
-        sql`${issueComments.createdAt} <= (select started_at from heartbeat_runs where id = ${run.id})`,
+        // Inputs admitted by adapter steering arrive after provider startup.
+        // Only the exact durable receipt can authorize that later source.
+        or(
+          sql`${issueComments.createdAt} <= (select started_at from heartbeat_runs where id = ${run.id})`,
+          and(
+            sql`${run.runtimeMode} = 'legacy'`,
+            eq(agentWakeupRequests.status, "coalesced"),
+            eq(agentWakeupRequests.runId, run.id),
+            sql`${agentWakeupRequests.payload}->'adapterSteering'->>'runId' = ${run.id}`,
+            sql`${agentWakeupRequests.payload}->'adapterSteering'->>'commentId' = ${issueComments.id}::text`,
+          ),
+        ),
         // Compare in SQL, retaining microseconds. A delayed pre-close source or
         // a source preceding any later close remains internal after reopening.
         notExists(
@@ -967,6 +978,15 @@ async function freshChatSourceAfterPublishedControl(
       connection,
     } = row;
     const payload = action.payload;
+    const steering = parseObject(receipt.payload?.adapterSteering);
+    const acceptedAdapterSteer =
+      run.runtimeMode === "legacy" &&
+      receipt.status === "coalesced" &&
+      receipt.runId === run.id &&
+      steering.runId === run.id &&
+      steering.commentId === comment.id &&
+      receipt.requestedByActorType === owner.requestedByActorType &&
+      receipt.requestedByActorId === owner.requestedByActorId;
     const event = parseObject(delivery.normalizedEvent);
     const fence = parseObject(event.runtimeContext);
     const sourceConversation = parseObject(event.conversation);
@@ -1024,6 +1044,7 @@ async function freshChatSourceAfterPublishedControl(
       receipt.payload?.issueId !== issueId ||
       receipt.payload?.wakeCommentId !== comment.id ||
       (receipt.id !== owner.id &&
+        !acceptedAdapterSteer &&
         (receipt.status !== "coalesced" ||
           receipt.payload?.coalescedIntoWakeupRequestId !== owner.id)) ||
       (payload.requestedByActorType === "user"
