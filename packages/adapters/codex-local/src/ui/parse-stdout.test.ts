@@ -80,4 +80,53 @@ describe("parseCodexStdoutLine", () => {
       isError: true,
     }]);
   });
+
+  it("reports MCP tool calls and web searches as tool calls", () => {
+    const ts = "2026-10-06T12:00:00.000Z";
+    expect(parseCodexStdoutLine(JSON.stringify({
+      type: "item.started",
+      item: {
+        id: "item_3",
+        type: "mcp_tool_call",
+        server: "paperclip",
+        tool: "get_issue",
+        arguments: { issueId: "PAP-1" },
+        status: "in_progress",
+      },
+    }), ts)).toEqual([{
+      kind: "tool_call",
+      ts,
+      name: "paperclip.get_issue",
+      toolUseId: "item_3",
+      input: { issueId: "PAP-1" },
+    }]);
+    expect(parseCodexStdoutLine(JSON.stringify({
+      type: "item.completed",
+      item: {
+        id: "item_3",
+        type: "mcp_tool_call",
+        server: "paperclip",
+        tool: "get_issue",
+        arguments: { issueId: "PAP-1" },
+        result: { content: [{ type: "text", text: "open" }] },
+        status: "completed",
+      },
+    }), ts)).toEqual([{
+      kind: "tool_result",
+      ts,
+      toolUseId: "item_3",
+      content: "open",
+      isError: false,
+    }]);
+    expect(parseCodexStdoutLine(JSON.stringify({
+      type: "item.started",
+      item: { id: "item_4", type: "web_search", query: "telegram bot api" },
+    }), ts)).toEqual([{
+      kind: "tool_call",
+      ts,
+      name: "web_search",
+      toolUseId: "item_4",
+      input: { query: "telegram bot api" },
+    }]);
+  });
 });

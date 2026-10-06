@@ -165,6 +165,44 @@ function parseToolUseItem(
   }];
 }
 
+/**
+ * `codex exec --json` reports MCP calls as their own item type
+ * (`{ type: "mcp_tool_call", server, tool, arguments, result?, error?, status }`).
+ */
+function parseMcpToolCallItem(
+  item: Record<string, unknown>,
+  ts: string,
+  phase: "started" | "completed",
+): TranscriptEntry[] {
+  const server = asString(item.server);
+  const tool = asString(item.tool, "unknown");
+  const name = server ? `${server}.${tool}` : tool;
+  const toolUseId = asString(item.id, name);
+  if (phase === "started") {
+    return [{ kind: "tool_call", ts, name, toolUseId, input: item.arguments ?? {} }];
+  }
+  const status = asString(item.status);
+  const error = item.error;
+  const isError = Boolean(error) || status === "failed" || status === "error";
+  const result = asRecord(item.result);
+  const resultText = Array.isArray(result?.content)
+    ? result.content
+        .map((block) => asString(asRecord(block)?.text))
+        .filter(Boolean)
+        .join("\n")
+    : "";
+  return [{
+    kind: "tool_result",
+    ts,
+    toolUseId,
+    content:
+      (isError ? errorText(error) : resultText) ||
+      stringifyUnknown(item.result) ||
+      `${name} ${isError ? "failed" : "completed"}`,
+    isError,
+  }];
+}
+
 function parseCodexItem(
   item: Record<string, unknown>,
   ts: string,
@@ -194,6 +232,25 @@ function parseCodexItem(
 
   if (itemType === "tool_use") {
     return parseToolUseItem(item, ts, phase);
+  }
+
+  if (itemType === "mcp_tool_call") {
+    return parseMcpToolCallItem(item, ts, phase);
+  }
+
+  if (itemType === "web_search") {
+    const toolUseId = asString(item.id, "web_search");
+    const query = asString(item.query);
+    if (phase === "started") {
+      return [{ kind: "tool_call", ts, name: "web_search", toolUseId, input: { query } }];
+    }
+    return [{
+      kind: "tool_result",
+      ts,
+      toolUseId,
+      content: query ? `searched: ${query}` : "web search completed",
+      isError: false,
+    }];
   }
 
   if (itemType === "tool_result" && phase === "completed") {
