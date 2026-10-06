@@ -143,4 +143,45 @@ describe("chat endpoint destination replacement validation", () => {
       }).success,
     ).toBe(false);
   });
+  it("accepts optional topic ids and tool activity, normalizing ids", () => {
+    expect(
+      replaceChatEndpointResourcesSchema.parse({
+        resources: [
+          {
+            id,
+            enabled: true,
+            respondWithoutMentionThreadIds: [" 42 ", "1"],
+            showToolActivity: true,
+          },
+        ],
+      }),
+    ).toEqual({
+      resources: [
+        {
+          id,
+          enabled: true,
+          respondWithoutMentionThreadIds: ["42", "1"],
+          showToolActivity: true,
+        },
+      ],
+    });
+    expect(
+      replaceChatEndpointResourcesSchema.parse({
+        resources: [{ id, enabled: true, respondWithoutMentionThreadIds: null }],
+      }).resources[0],
+    ).toEqual({ id, enabled: true, respondWithoutMentionThreadIds: null });
+    for (const invalid of [["general"], ["-5"], [""], "42"])
+      expect(
+        replaceChatEndpointResourcesSchema.safeParse({
+          resources: [
+            { id, enabled: true, respondWithoutMentionThreadIds: invalid },
+          ],
+        }).success,
+      ).toBe(false);
+    expect(
+      replaceChatEndpointResourcesSchema.safeParse({
+        resources: [{ id, enabled: true, showToolActivity: "yes" }],
+      }).success,
+    ).toBe(false);
+  });
 });

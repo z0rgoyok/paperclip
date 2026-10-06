@@ -10,6 +10,25 @@ export const CHAT_PROVIDERS = [
 ] as const;
 export type ChatProvider = (typeof CHAT_PROVIDERS)[number];
 
+/**
+ * Providers whose bot can post one message and edit/delete it in place, which
+ * the per-run tool activity message needs.
+ */
+export const CHAT_TOOL_ACTIVITY_PROVIDERS = [
+  "telegram",
+  "slack",
+  "discord",
+  "microsoft-teams",
+] as const satisfies readonly ChatProvider[];
+
+export function chatProviderSupportsToolActivity(
+  provider: ChatProvider,
+): boolean {
+  return (CHAT_TOOL_ACTIVITY_PROVIDERS as readonly ChatProvider[]).includes(
+    provider,
+  );
+}
+
 export const CHAT_ENDPOINT_STATUSES = [
   "draft",
   "verifying",
@@ -278,6 +297,16 @@ export interface ChatEndpointResource {
    * bot. The agent decides itself whether to reply (`NO_REPLY` stays silent).
    */
   respondWithoutMention?: boolean;
+  /**
+   * Telegram forum topic ids (`message_thread_id`; "1" is General) that
+   * respondWithoutMention is limited to. Null or empty means the whole group.
+   */
+  respondWithoutMentionThreadIds?: string[] | null;
+  /**
+   * Post one live message per agent run listing the tools the agent calls
+   * (secrets masked). Only for providers that support message edits.
+   */
+  showToolActivity?: boolean;
   createdAt: string;
   updatedAt: string;
   participants?: string[];

@@ -145,6 +145,21 @@ export const replaceChatEndpointResourcesSchema = z
             // Optional for backward compatibility: omitted keeps the stored
             // value. Only Telegram group/topic destinations accept true.
             respondWithoutMention: z.boolean().optional(),
+            // Telegram forum topic ids that ambient intake is limited to.
+            // Omitted keeps the stored list; null or [] means the whole group.
+            respondWithoutMentionThreadIds: z
+              .array(
+                z
+                  .string()
+                  .trim()
+                  .regex(/^\d{1,12}$/, "Topic ids are positive integers"),
+              )
+              .max(100)
+              .nullable()
+              .optional(),
+            // Optional like respondWithoutMention; only providers with
+            // message edits accept true.
+            showToolActivity: z.boolean().optional(),
           })
           .strict(),
       )

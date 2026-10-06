@@ -227,6 +227,19 @@ export const chatEndpointResources = pgTable(
     respondWithoutMention: boolean("respond_without_mention")
       .notNull()
       .default(false),
+    /**
+     * Telegram forum topic ids (`message_thread_id`, "1" = General) that
+     * respondWithoutMention applies to. Null or empty keeps the whole group
+     * ambient; other topics still need a mention, command, or reply.
+     */
+    respondWithoutMentionThreadIds: text(
+      "respond_without_mention_thread_ids",
+    ).array(),
+    /**
+     * Post one live message per agent run in this destination listing the
+     * tools the agent calls (secrets masked). Requires provider message edits.
+     */
+    showToolActivity: boolean("show_tool_activity").notNull().default(false),
     metadata: jsonb("metadata")
       .$type<Record<string, unknown>>()
       .notNull()
