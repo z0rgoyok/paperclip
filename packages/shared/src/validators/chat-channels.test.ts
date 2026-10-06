@@ -5,6 +5,7 @@ import {
   resolveChatActionSchema,
   resolveChatPublicationSchema,
   chatPublicationStateSchema,
+  replaceChatEndpointResourcesSchema,
 } from "./chat-channels.js";
 
 describe("Microsoft Teams chat credential validation", () => {
@@ -109,5 +110,37 @@ describe("chat provider-action resolution validation", () => {
     expect(resolveChatActionSchema.safeParse({ action: "retry" }).success).toBe(
       false,
     );
+  });
+});
+
+describe("chat endpoint destination replacement validation", () => {
+  const id = "3f0c2a5e-8f9b-4c1d-9a2e-7b6c5d4e3f21";
+
+  it("keeps accepting the original enabled-only shape", () => {
+    expect(
+      replaceChatEndpointResourcesSchema.parse({
+        resources: [{ id, enabled: true }],
+      }),
+    ).toEqual({ resources: [{ id, enabled: true }] });
+  });
+
+  it("accepts an optional boolean respondWithoutMention", () => {
+    expect(
+      replaceChatEndpointResourcesSchema.parse({
+        resources: [{ id, enabled: true, respondWithoutMention: true }],
+      }),
+    ).toEqual({
+      resources: [{ id, enabled: true, respondWithoutMention: true }],
+    });
+    expect(
+      replaceChatEndpointResourcesSchema.safeParse({
+        resources: [{ id, enabled: true, respondWithoutMention: "yes" }],
+      }).success,
+    ).toBe(false);
+    expect(
+      replaceChatEndpointResourcesSchema.safeParse({
+        resources: [{ id, enabled: true, unknownFlag: true }],
+      }).success,
+    ).toBe(false);
   });
 });

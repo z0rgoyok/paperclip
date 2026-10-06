@@ -273,6 +273,11 @@ export interface ChatEndpointResource {
   providerUrl?: string | null;
   availability: ChatResourceAvailability;
   enabled: boolean;
+  /**
+   * Telegram groups/forum topics only: admit messages that do not mention the
+   * bot. The agent decides itself whether to reply (`NO_REPLY` stays silent).
+   */
+  respondWithoutMention?: boolean;
   createdAt: string;
   updatedAt: string;
   participants?: string[];

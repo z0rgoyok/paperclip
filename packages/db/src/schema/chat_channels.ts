@@ -219,6 +219,14 @@ export const chatEndpointResources = pgTable(
       .notNull()
       .default("available"),
     enabled: boolean("enabled").notNull().default(false),
+    /**
+     * Operator opt-in for ambient group traffic. When true, a Telegram group
+     * or forum-topic message that does not mention the bot is admitted as
+     * addressed; the agent decides itself whether to answer.
+     */
+    respondWithoutMention: boolean("respond_without_mention")
+      .notNull()
+      .default(false),
     metadata: jsonb("metadata")
       .$type<Record<string, unknown>>()
       .notNull()

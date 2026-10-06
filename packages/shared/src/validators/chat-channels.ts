@@ -142,6 +142,9 @@ export const replaceChatEndpointResourcesSchema = z
           .object({
             id: z.string().uuid(),
             enabled: z.boolean(),
+            // Optional for backward compatibility: omitted keeps the stored
+            // value. Only Telegram group/topic destinations accept true.
+            respondWithoutMention: z.boolean().optional(),
           })
           .strict(),
       )
