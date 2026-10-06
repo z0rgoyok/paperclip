@@ -6,6 +6,9 @@ import {
   isReplayEligible,
   isResolutionEligible,
   supportsRespondWithoutMention,
+  supportsToolActivity,
+  parseTopicIds,
+  formatTopicIds,
   activityResolutionActions,
   activityResolutionDescription,
 } from "./ChatEndpointDetail";
@@ -234,5 +237,20 @@ describe("chat endpoint destination controls", () => {
     );
     expect(supportsRespondWithoutMention("slack", "channel")).toBe(false);
     expect(supportsRespondWithoutMention("discord", "channel")).toBe(false);
+  });
+
+  it("parses the topic scope field and offers tool activity for editable providers", () => {
+    expect(parseTopicIds("")).toEqual({ ids: null, invalid: [] });
+    expect(parseTopicIds(" 42, 1 ,42")).toEqual({ ids: ["42", "1"], invalid: [] });
+    expect(parseTopicIds("42 general")).toEqual({
+      ids: ["42"],
+      invalid: ["general"],
+    });
+    expect(formatTopicIds(["42", "1"])).toBe("42, 1");
+    expect(formatTopicIds(null)).toBe("");
+    expect(supportsToolActivity("telegram")).toBe(true);
+    expect(supportsToolActivity("slack")).toBe(true);
+    expect(supportsToolActivity("agentmail")).toBe(false);
+    expect(supportsToolActivity("github")).toBe(false);
   });
 });

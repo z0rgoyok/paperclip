@@ -191,6 +191,103 @@ export function supportsRespondWithoutMention(
   return provider === "telegram" && resourceType !== "direct_message";
 }
 
+/** Providers whose bot can edit its own message in place (tool activity). */
+const TOOL_ACTIVITY_PROVIDERS: readonly ChatProvider[] = [
+  "telegram",
+  "slack",
+  "discord",
+  "microsoft-teams",
+];
+
+export function supportsToolActivity(provider: ChatProvider): boolean {
+  return TOOL_ACTIVITY_PROVIDERS.includes(provider);
+}
+
+/** Comma-separated topic ids as shown in the field. */
+export function formatTopicIds(ids: readonly string[] | null | undefined) {
+  return (ids ?? []).join(", ");
+}
+
+/**
+ * Parses the "Only in topics" field. Empty input means the whole group (null);
+ * anything that is not a positive integer id is reported back as invalid.
+ */
+export function parseTopicIds(
+  input: string,
+): { ids: string[] | null; invalid: string[] } {
+  const parts = input
+    .split(/[\s,]+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const invalid = parts.filter((part) => !/^\d{1,12}$/.test(part));
+  const ids = [...new Set(parts.filter((part) => /^\d{1,12}$/.test(part)))];
+  return { ids: ids.length > 0 ? ids : null, invalid };
+}
+
+function TopicScopeField({
+  resource,
+  disabled,
+  onSave,
+}: {
+  resource: ChatEndpointResource;
+  disabled: boolean;
+  onSave: (ids: string[] | null) => void;
+}) {
+  const stored = formatTopicIds(resource.respondWithoutMentionThreadIds);
+  const [value, setValue] = useState(stored);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => setValue(stored), [stored]);
+  const commit = () => {
+    const parsed = parseTopicIds(value);
+    if (parsed.invalid.length > 0) {
+      setError(`Not a topic id: ${parsed.invalid.join(", ")}`);
+      return;
+    }
+    setError(null);
+    if (formatTopicIds(parsed.ids) === stored) {
+      setValue(stored);
+      return;
+    }
+    onSave(parsed.ids);
+  };
+  const inputId = `topics-${resource.id}`;
+  return (
+    <div className="mt-2 space-y-1">
+      <label htmlFor={inputId} className="text-xs text-muted-foreground">
+        Only in topics (thread IDs, comma-separated; empty = whole group)
+      </label>
+      <input
+        id={inputId}
+        type="text"
+        inputMode="numeric"
+        placeholder="e.g. 1, 42"
+        className="w-full rounded-md border border-border bg-transparent px-2 py-1 text-sm disabled:opacity-50"
+        value={value}
+        disabled={disabled}
+        onChange={(event) => setValue(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            commit();
+          }
+        }}
+      />
+      {error ? (
+        <p role="alert" className="text-xs text-destructive">
+          {error}
+        </p>
+      ) : (
+        <p className="text-xs text-muted-foreground">
+          The topic id is the number after the group in a topic message link
+          (t.me/c/…/&lt;topic&gt;/…). General is 1. Other topics still need a
+          mention, command, or reply.
+        </p>
+      )}
+    </div>
+  );
+}
+
 export function isIndividuallyToggleableResource(
   provider: ChatProvider,
   resourceType: string,
@@ -376,10 +473,15 @@ function Settings({
   });
   const saveResources = useMutation({
     mutationFn: (
-      resource: Pick<
-        ChatEndpointResource,
-        "id" | "enabled" | "respondWithoutMention"
-      >,
+      resource: Pick<ChatEndpointResource, "id" | "enabled"> &
+        Partial<
+          Pick<
+            ChatEndpointResource,
+            | "respondWithoutMention"
+            | "respondWithoutMentionThreadIds"
+            | "showToolActivity"
+          >
+        >,
     ) => chatEndpointsApi.updateResources(endpointId, [resource]),
     onSuccess: (resources) =>
       queryClient.setQueryData(
@@ -422,6 +524,24 @@ function Settings({
       id: resource.id,
       enabled: resource.enabled,
       respondWithoutMention,
+    });
+  const saveTopicScope = (
+    resource: ChatEndpointResource,
+    respondWithoutMentionThreadIds: string[] | null,
+  ) =>
+    saveResources.mutate({
+      id: resource.id,
+      enabled: resource.enabled,
+      respondWithoutMentionThreadIds,
+    });
+  const toggleToolActivity = (
+    resource: ChatEndpointResource,
+    showToolActivity: boolean,
+  ) =>
+    saveResources.mutate({
+      id: resource.id,
+      enabled: resource.enabled,
+      showToolActivity,
     });
   return (
     <section className="max-w-3xl space-y-7">
@@ -541,6 +661,43 @@ function Settings({
                           resource,
                           respondWithoutMention,
                         )
+                      }
+                    />
+                  </div>
+                )}
+                {supportsRespondWithoutMention(endpoint.provider, resource.type) &&
+                  resource.respondWithoutMention && (
+                    <div className="ml-4 border-l border-border pl-3">
+                      <TopicScopeField
+                        resource={resource}
+                        disabled={
+                          !resource.enabled ||
+                          resource.availability !== "available" ||
+                          saveResources.isPending
+                        }
+                        onSave={(ids) => saveTopicScope(resource, ids)}
+                      />
+                    </div>
+                  )}
+                {supportsToolActivity(endpoint.provider) && (
+                  <div className="mt-2 ml-4 flex items-center gap-3 border-l border-border pl-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm">Show tool activity</p>
+                      <p className="text-xs text-muted-foreground">
+                        Post one live message per run listing the tools the
+                        agent calls. Secrets are masked.
+                      </p>
+                    </div>
+                    <ToggleSwitch
+                      aria-label={`Show tool activity in ${resource.label}`}
+                      checked={resource.showToolActivity ?? false}
+                      disabled={
+                        !resource.enabled ||
+                        resource.availability !== "available" ||
+                        saveResources.isPending
+                      }
+                      onCheckedChange={(showToolActivity) =>
+                        toggleToolActivity(resource, showToolActivity)
                       }
                     />
                   </div>

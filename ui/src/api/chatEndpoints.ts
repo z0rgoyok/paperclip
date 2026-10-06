@@ -39,6 +39,10 @@ export interface ChatEndpointResource {
   enabled: boolean;
   /** Telegram groups only: admit messages that do not mention the bot. */
   respondWithoutMention?: boolean;
+  /** Forum topic ids respondWithoutMention is limited to; null = whole group. */
+  respondWithoutMentionThreadIds?: string[] | null;
+  /** Post one live message per run listing the tools the agent calls. */
+  showToolActivity?: boolean;
   detail?: string | null;
   participants?: string[];
 }
@@ -230,6 +234,8 @@ export const chatEndpointsApi = {
       id: string;
       enabled: boolean;
       respondWithoutMention?: boolean;
+      respondWithoutMentionThreadIds?: string[] | null;
+      showToolActivity?: boolean;
     }>,
   ) =>
     api.put<ChatEndpointResource[]>(`/chat-endpoints/${endpointId}/resources`, {
