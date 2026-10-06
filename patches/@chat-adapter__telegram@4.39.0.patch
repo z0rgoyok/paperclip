@@ -214,6 +214,15 @@ diff --git a/dist/index.js b/dist/index.js
      } catch (error) {
        if (error instanceof NetworkError) {
          throw error;
+@@ -3129,7 +3171,7 @@
+     return chat.username;
+   }
+   isBotMentioned(message, text2) {
+-    if (this.mentionOnReply && this._botUserId && message.reply_to_message?.from && String(message.reply_to_message.from.id) === this._botUserId && message.reply_to_message.message_id !== message.message_thread_id && !(message.from && String(message.from.id) === this._botUserId)) {
++    if (this.mentionOnReply && this._botUserId && message.reply_to_message?.from && String(message.reply_to_message.from.id) === this._botUserId && !(message.is_topic_message && message.reply_to_message.message_id === message.message_thread_id) && !(message.from && String(message.from.id) === this._botUserId)) {
+       return true;
+     }
+     if (!text2) {
 @@ -3439,6 +3481,12 @@
    async telegramFetch(method, payload, request) {
      const botToken = this.staticBotToken ?? await this.resolveBotToken();
