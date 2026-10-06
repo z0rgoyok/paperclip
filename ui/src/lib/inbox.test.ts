@@ -317,6 +317,18 @@ describe("inbox helpers", () => {
     storage.clear();
   });
 
+  it("excludes unread chat conversations, including blocked chats, from the personal badge", () => {
+    const result = computeInboxBadgeData({
+      approvals: [], joinRequests: [], dashboard, heartbeatRuns: [],
+      mineIssues: [makeIssue("task", true),
+        { ...makeIssue("chat", true), originKind: "chat_channel", status: "in_progress" },
+        { ...makeIssue("blocked-chat", true), originKind: "chat_channel", status: "blocked" }],
+      dismissedAlerts: new Set(), dismissedAtByKey: new Map(),
+    });
+    expect(result.inbox).toBe(1);
+    expect(result.mineIssues).toBe(1);
+  });
+
   it("counts the same inbox sources the badge uses", () => {
     const result = computeInboxBadgeData({
       approvals: [

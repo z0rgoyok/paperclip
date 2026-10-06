@@ -420,6 +420,7 @@ function CasePropertiesContent({
                     identifier: link.issue.identifier,
                     title: link.issue.title,
                     status: issueReferenceStatus(link.issue.status),
+                    originKind: link.issue.originKind,
                   }}
                 />
               ))}

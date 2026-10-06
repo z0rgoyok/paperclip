@@ -1820,6 +1820,7 @@ export interface IssueFilters {
   excludeRoutineExecutions?: boolean;
   includePluginOperations?: boolean;
   includeChatConversations?: boolean;
+  excludeChatConversations?: boolean;
   includeBlockedBy?: boolean;
   includeBlockedInboxAttention?: boolean;
   includeLiveDescendantSummary?: boolean;
@@ -3072,10 +3073,12 @@ function projectMembershipCondition(projectId: string) {
 /**
  * Chat conversations are hidden from task lists and counters by default. They
  * stay reachable by explicit opt-in, by origin filters, by text search and in
- * the per-user inbox views and the blocked attention views, where a
- * conversation can need a human.
+ * the blocked attention views, where a conversation can need a human. Board
+ * inbox reads explicitly exclude chats before pagination, including search.
  */
 function shouldIncludeChatConversationIssues(filters: IssueFilters | undefined) {
+  if (filters?.attention === "blocked") return true;
+  if (filters?.excludeChatConversations) return false;
   return Boolean(
     filters?.includeChatConversations ||
     filters?.originKind ||
@@ -3601,6 +3604,7 @@ type IssueRelationSummaryRow = {
   identifier: string | null;
   title: string;
   status: string;
+  originKind?: string;
   priority: string;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
@@ -3614,6 +3618,7 @@ function summarizeIssueRelationRow(
     identifier: row.identifier,
     title: row.title,
     status: row.status as IssueRelationIssueSummary["status"],
+    originKind: row.originKind,
     priority: row.priority as IssueRelationIssueSummary["priority"],
     assigneeAgentId: row.assigneeAgentId,
     assigneeUserId: row.assigneeUserId,
@@ -3651,6 +3656,7 @@ async function terminalExplicitBlockersByRoot(
           identifier: issues.identifier,
           title: issues.title,
           status: issues.status,
+          originKind: issues.originKind,
           priority: issues.priority,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
@@ -5115,6 +5121,7 @@ async function blockedByMapForIssues(
         identifier: issues.identifier,
         title: issues.title,
         status: issues.status,
+        originKind: issues.originKind,
         priority: issues.priority,
         assigneeAgentId: issues.assigneeAgentId,
         assigneeUserId: issues.assigneeUserId,
@@ -5137,6 +5144,7 @@ async function blockedByMapForIssues(
         identifier: row.identifier,
         title: row.title,
         status: row.status as IssueRelationIssueSummary["status"],
+        originKind: row.originKind,
         priority: row.priority as IssueRelationIssueSummary["priority"],
         assigneeAgentId: row.assigneeAgentId,
         assigneeUserId: row.assigneeUserId,
@@ -7240,6 +7248,7 @@ export function issueService(db: Db) {
           identifier: issues.identifier,
           title: issues.title,
           status: issues.status,
+          originKind: issues.originKind,
           priority: issues.priority,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
@@ -7260,6 +7269,7 @@ export function issueService(db: Db) {
           identifier: issues.identifier,
           title: issues.title,
           status: issues.status,
+          originKind: issues.originKind,
           priority: issues.priority,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
@@ -8536,6 +8546,7 @@ export function issueService(db: Db) {
           identifier: issues.identifier,
           title: issues.title,
           status: issues.status,
+          originKind: issues.originKind,
           priority: issues.priority,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
@@ -9151,6 +9162,7 @@ export function issueService(db: Db) {
           identifier: issues.identifier,
           title: issues.title,
           status: issues.status,
+          originKind: issues.originKind,
           priority: issues.priority,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
@@ -13135,6 +13147,7 @@ export function issueService(db: Db) {
         title: string;
         description: string | null;
         status: string;
+        originKind: string;
         priority: string;
         assigneeAgentId: string | null;
         projectId: string | null;
@@ -13156,6 +13169,7 @@ export function issueService(db: Db) {
             title: issues.title,
             description: issues.description,
             status: issues.status,
+            originKind: issues.originKind,
             priority: issues.priority,
             assigneeAgentId: issues.assigneeAgentId,
             projectId: issues.projectId,
@@ -13172,6 +13186,7 @@ export function issueService(db: Db) {
           title: parent.title,
           description: parent.description ?? null,
           status: parent.status,
+          originKind: parent.originKind,
           priority: parent.priority,
           assigneeAgentId: parent.assigneeAgentId ?? null,
           projectId: parent.projectId ?? null,

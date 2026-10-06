@@ -38,6 +38,7 @@ export interface UserProfileDailyPoint {
 }
 
 export interface UserProfileIssueSummary {
+  originKind?: string;
   id: string;
   identifier: string | null;
   title: string;

@@ -976,7 +976,7 @@ function IssueDetailLoadingState({
           {headerSeed ? (
             <>
               <StatusIcon
-                status={headerSeed.status}
+                status={headerSeed.status} originKind={headerSeed.originKind}
                 blockerAttention={headerSeed.blockerAttention}
               />
               {/* PAP-411: priority UI hidden behind SHOW_TASK_PRIORITY_UI. */}
@@ -3719,13 +3719,14 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   // from the blocker counts — so the key signs over the full blockerAttention,
   // not just `state`, to avoid a stale label when counts change.
   const breadcrumbStatusKey = breadcrumbStatus
-    ? `${breadcrumbStatus}|${issue?.externalConversationState ?? ""}|${JSON.stringify(breadcrumbBlockerAttention ?? null)}`
+    ? `${breadcrumbStatus}|${issue?.originKind ?? ""}|${issue?.externalConversationState ?? ""}|${JSON.stringify(breadcrumbBlockerAttention ?? null)}`
     : undefined;
   const breadcrumbStatusLeading = useMemo(
     () =>
       breadcrumbStatus ? (
         <StatusIcon
           status={breadcrumbStatus}
+          originKind={issue?.originKind}
           externalConversationState={issue?.externalConversationState}
           className="size-3"
           blockerAttention={breadcrumbBlockerAttention}
@@ -6849,7 +6850,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
 
   const issueStatusControl = (
     <StatusIcon
-      status={issue.status} externalConversationState={issue.externalConversationState}
+      status={issue.status} originKind={issue.originKind} externalConversationState={issue.externalConversationState}
       size="lg"
       blockerAttention={issue.blockerAttention}
       onChange={(status) => updateIssue.mutate({ status })}

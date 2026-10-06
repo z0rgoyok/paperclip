@@ -270,7 +270,7 @@ async function resolveAgentNames(db: CaseRouteDb, agentIds: (string | null)[]) {
  */
 async function resolveIssuesForRuns(db: CaseRouteDb, companyId: string, runIds: (string | null)[]) {
   const valid = [...new Set(runIds.filter((id): id is string => !!id && isUuidLike(id)))];
-  const map = new Map<string, { id: string; identifier: string; title: string; status: string }>();
+  const map = new Map<string, { id: string; identifier: string; title: string; status: string; originKind?: string }>();
   if (valid.length === 0) return map;
   const rows = await db
     .select({
@@ -278,6 +278,7 @@ async function resolveIssuesForRuns(db: CaseRouteDb, companyId: string, runIds: 
       identifier: issues.identifier,
       title: issues.title,
       status: issues.status,
+      originKind: issues.originKind,
       executionRunId: issues.executionRunId,
       checkoutRunId: issues.checkoutRunId,
       originRunId: issues.originRunId,
@@ -299,7 +300,7 @@ async function resolveIssuesForRuns(db: CaseRouteDb, companyId: string, runIds: 
       (row) => row.executionRunId === runId || row.checkoutRunId === runId || row.originRunId === runId,
     );
     if (match) {
-      map.set(runId, { id: match.id, identifier: match.identifier ?? match.id, title: match.title, status: match.status });
+      map.set(runId, { id: match.id, identifier: match.identifier ?? match.id, title: match.title, status: match.status, originKind: match.originKind });
     }
   }
   return map;
@@ -313,7 +314,7 @@ function payloadIssueIdForEvent(kind: string, payload: Record<string, unknown> |
 
 async function resolveIssuesByIds(db: CaseRouteDb, companyId: string, issueIds: (string | null)[]) {
   const valid = [...new Set(issueIds.filter((id): id is string => !!id && isUuidLike(id)))];
-  const map = new Map<string, { id: string; identifier: string; title: string; status: string }>();
+  const map = new Map<string, { id: string; identifier: string; title: string; status: string; originKind?: string }>();
   if (valid.length === 0) return map;
   const rows = await db
     .select({
@@ -321,11 +322,12 @@ async function resolveIssuesByIds(db: CaseRouteDb, companyId: string, issueIds: 
       identifier: issues.identifier,
       title: issues.title,
       status: issues.status,
+      originKind: issues.originKind,
     })
     .from(issues)
     .where(and(eq(issues.companyId, companyId), inArray(issues.id, valid)));
   for (const row of rows) {
-    map.set(row.id, { id: row.id, identifier: row.identifier ?? row.id, title: row.title, status: row.status });
+    map.set(row.id, { id: row.id, identifier: row.identifier ?? row.id, title: row.title, status: row.status, originKind: row.originKind });
   }
   return map;
 }
@@ -456,6 +458,7 @@ async function loadCaseDetail(db: CaseRouteDb, row: typeof cases.$inferSelect) {
         identifier: item.issue.identifier,
         title: item.issue.title,
         status: item.issue.status,
+        originKind: item.issue.originKind,
       },
     })),
     documents: documentRows.map((item) => ({

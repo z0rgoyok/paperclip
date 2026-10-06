@@ -156,7 +156,7 @@ function WaitingChipLink({
       className="inline-flex max-w-full items-center gap-1 rounded-md border border-blue-300/70 bg-background/80 px-2 py-1 font-mono text-xs text-blue-950 transition-colors hover:border-blue-500 hover:bg-blue-100 hover:underline dark:border-blue-500/40 dark:bg-background/40 dark:text-blue-100 dark:hover:bg-blue-500/15"
     >
       <StatusGlyph
-        status={blocker.status}
+        status={blocker.status} originKind={blocker.originKind}
         size="sm"
         title={`${waitingTaskStatusLabel(blocker.status)} status`}
       />

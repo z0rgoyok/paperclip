@@ -163,6 +163,13 @@ describeEmbeddedPostgres("companySearchService", () => {
     return id;
   }
 
+  it("preserves chat kind on searchable issue summaries for board presentation", async () => {
+    const companyId = await createCompany();
+    const chatId = await createIssue(companyId, { title: "Chat greeting", originKind: "chat_channel", status: "in_progress" });
+    const result = await svc.search(companyId, companySearchQuerySchema.parse({ q: "Chat greeting", scope: "issues" }));
+    expect(result.results.find((row) => row.issue?.id === chatId)?.issue).toMatchObject({ originKind: "chat_channel", status: "in_progress" });
+  });
+
   it("keeps exact entity names ahead of speculative task typos and rejects empty quotes", async () => {
     const companyId = await createCompany();
     const agentId = await createAgent(companyId, { name: "Mibile" });

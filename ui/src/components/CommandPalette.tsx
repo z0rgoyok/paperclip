@@ -1,3 +1,4 @@
+import { StatusGlyph } from "./StatusGlyph";
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { useState, useEffect, useMemo } from "react";
 import { useLocation, useNavigate } from "@/lib/router";
@@ -402,7 +403,7 @@ export function CommandPalette() {
                   }
                   onSelect={() => go(`/issues/${issue.identifier ?? issue.id}`)}
                 >
-                  <CircleDot className="mr-2 h-4 w-4" />
+                  <StatusGlyph status={issue.status} originKind={issue.originKind} className="mr-2 h-4 w-4" />
                   <span className="text-muted-foreground mr-2 font-mono text-xs">
                     {issue.identifier ?? issue.id.slice(0, 8)}
                   </span>

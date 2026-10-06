@@ -1,6 +1,7 @@
 import type { CSSProperties } from "react";
 import {
   Ban,
+  MessageSquare,
   Circle,
   CircleCheck,
   CircleDashed,
@@ -72,6 +73,7 @@ const STATUS_ICON_DEFAULT = CircleDashed;
 
 interface StatusGlyphProps {
   status: string;
+  originKind?: string | null;
   /** sm 14 / md 16 / lg 20. Default `md`. */
   size?: StatusGlyphSize;
   className?: string;
@@ -79,8 +81,21 @@ interface StatusGlyphProps {
   title?: string;
 }
 
-export function StatusGlyph({ status, size = "md", className, title }: StatusGlyphProps) {
+export function StatusGlyph({ status, originKind, size = "md", className, title }: StatusGlyphProps) {
   const px = SIZE_PX[size];
+  // Conversation identity replaces task progress; blocked attention stays visible.
+  if (originKind === "chat_channel" && status !== "blocked" && status !== "in_queue") {
+    return (
+      <MessageSquare
+        size={px}
+        className={cn("inline-block shrink-0 align-middle text-muted-foreground", className)}
+        role="img"
+        aria-label="Chat conversation"
+      >
+        <title>Chat conversation</title>
+      </MessageSquare>
+    );
+  }
   const Icon = STATUS_ICON[status] ?? STATUS_ICON_DEFAULT;
   const cssVar = taskStatusIconVar[status] ?? taskStatusIconVarDefault;
   const a11y = title

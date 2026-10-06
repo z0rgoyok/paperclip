@@ -209,3 +209,13 @@ icon shares a column with stars and appears on hover or keyboard focus (always o
 touch). It opens a company-wide name/role search, independent of sidebar membership.
 Selecting an agent opens their persistent conversation; it does not reset history
 or create a task until the existing first-write flow requires one.
+
+### External chat conversations on the board
+
+Issues with `originKind: chat_channel` are hidden by default from Tasks and the
+Inbox (Mine, Recent, Unread, All), including Inbox search and the personal badge.
+The visibility filter offers **Show chat conversations**. Blocked conversations
+remain in the Blocked inbox and its count. Search and direct references keep
+conversations reachable and show a static chat indicator instead of task progress.
+Agent inbox APIs remain inclusive. These display rules preserve the issue status
+lifecycle.

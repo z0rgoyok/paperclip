@@ -1,3 +1,4 @@
+import { filterInboxChatConversations } from "../lib/chat-conversation";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -814,6 +815,7 @@ function StreamlinedInbox() {
   });
   const experimentalSettingsLoaded = experimentalSettings !== undefined;
   const [searchQuery, setSearchQuery] = useState("");
+  const [showChatConversations, setShowChatConversations] = useState(false);
   const normalizedSearchQuery = searchQuery.trim();
   const [filterPreferences, setFilterPreferences] = useState<StreamlinedInboxViewState>(
     () => loadInboxCollectionPreferences(selectedCompanyId).viewState,
@@ -945,7 +947,7 @@ function StreamlinedInbox() {
   });
   usePublishSharedQueryData(sharedDashboard, dashboard, dashboardUpdatedAt);
 
-  const inboxIssuesQueryKey = [...queryKeys.issues.list(selectedCompanyId!), "compact", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const;
+  const inboxIssuesQueryKey = [...queryKeys.issues.list(selectedCompanyId!), "compact", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT, showChatConversations] as const;
   const sharedInboxIssues = useSharedPollingQuery<Issue[]>({
     companyId: selectedCompanyId,
     resourceKey: "inbox:issues",
@@ -956,6 +958,8 @@ function StreamlinedInbox() {
     queryKey: inboxIssuesQueryKey,
     queryFn: () =>
       issuesApi.listCompact(selectedCompanyId!, {
+        includeChatConversations: showChatConversations,
+        excludeChatConversations: !showChatConversations,
         includeRoutineExecutions: true,
         includeLiveDescendantSummary: true,
         limit: INBOX_ISSUE_LIST_LIMIT,
@@ -970,9 +974,11 @@ function StreamlinedInbox() {
     isLoading: isMineIssuesLoading,
     dataUpdatedAt: mineIssuesUpdatedAt,
   } = useQuery({
-    queryKey: [...queryKeys.issues.listMineByMe(selectedCompanyId!), "compact", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const,
+    queryKey: [...queryKeys.issues.listMineByMe(selectedCompanyId!), "compact", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT, showChatConversations] as const,
     queryFn: () =>
       issuesApi.listCompact(selectedCompanyId!, {
+        includeChatConversations: showChatConversations,
+        excludeChatConversations: !showChatConversations,
         touchedByUserId: "me",
         inboxArchivedByUserId: "me",
         status: INBOX_MINE_ISSUE_STATUS_FILTER,
@@ -984,7 +990,7 @@ function StreamlinedInbox() {
     refetchOnWindowFocus: false,
     staleTime: INBOX_HOT_PATH_STALE_MS,
   });
-  const mineIssuesQueryKey = [...queryKeys.issues.listMineByMe(selectedCompanyId!), "compact", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const;
+  const mineIssuesQueryKey = [...queryKeys.issues.listMineByMe(selectedCompanyId!), "compact", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT, showChatConversations] as const;
   const sharedMineIssues = useSharedPollingQuery<Issue[]>({
     companyId: selectedCompanyId,
     resourceKey: "inbox:mine-issues",
@@ -997,9 +1003,11 @@ function StreamlinedInbox() {
     isLoading: isTouchedIssuesLoading,
     dataUpdatedAt: touchedIssuesUpdatedAt,
   } = useQuery({
-    queryKey: [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "compact", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const,
+    queryKey: [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "compact", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT, showChatConversations] as const,
     queryFn: () =>
       issuesApi.listCompact(selectedCompanyId!, {
+        includeChatConversations: showChatConversations,
+        excludeChatConversations: !showChatConversations,
         touchedByUserId: "me",
         status: INBOX_MINE_ISSUE_STATUS_FILTER,
         includeRoutineExecutions: true,
@@ -1010,7 +1018,7 @@ function StreamlinedInbox() {
     refetchOnWindowFocus: false,
     staleTime: INBOX_HOT_PATH_STALE_MS,
   });
-  const touchedIssuesQueryKey = [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "compact", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const;
+  const touchedIssuesQueryKey = [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "compact", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT, showChatConversations] as const;
   const sharedTouchedIssues = useSharedPollingQuery<Issue[]>({
     companyId: selectedCompanyId,
     resourceKey: "inbox:touched-issues",
@@ -1086,10 +1094,13 @@ function StreamlinedInbox() {
       ...queryKeys.issues.search(selectedCompanyId!, normalizedSearchQuery, undefined, 25),
       "compact",
       "inbox-supplement",
+      showChatConversations,
       "live-descendant-summary",
     ],
     queryFn: () =>
       issuesApi.listCompact(selectedCompanyId!, {
+        includeChatConversations: showChatConversations,
+        excludeChatConversations: !showChatConversations,
         q: normalizedSearchQuery,
         limit: 25,
         includeRoutineExecutions: true,
@@ -1127,12 +1138,12 @@ function StreamlinedInbox() {
     externalObjectSummariesReady: externalObjectSummariesReady && !externalObjectSummariesLoading,
   }), [externalObjectSummariesLoading, externalObjectSummariesReady, externalObjectSummaryByIssueId]);
   const visibleMineIssues = useMemo(
-    () => applyIssueFilters(mineIssues, issueFilters, currentUserId, true, liveIssueIds, issueFilterContext),
-    [mineIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext],
+    () => applyIssueFilters(filterInboxChatConversations(mineIssues, showChatConversations), issueFilters, currentUserId, true, liveIssueIds, issueFilterContext),
+    [mineIssues, showChatConversations, issueFilters, currentUserId, liveIssueIds, issueFilterContext],
   );
   const visibleTouchedIssues = useMemo(
-    () => applyIssueFilters(touchedIssues, issueFilters, currentUserId, true, liveIssueIds, issueFilterContext),
-    [touchedIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext],
+    () => applyIssueFilters(filterInboxChatConversations(touchedIssues, showChatConversations), issueFilters, currentUserId, true, liveIssueIds, issueFilterContext),
+    [touchedIssues, showChatConversations, issueFilters, currentUserId, liveIssueIds, issueFilterContext],
   );
   const unreadTouchedIssues = useMemo(
     () => visibleTouchedIssues.filter((issue) => issue.isUnreadForMe),
@@ -1434,7 +1445,7 @@ function StreamlinedInbox() {
         query: normalizedSearchQuery,
         filteredWorkItems,
         archivedSearchIssues,
-        remoteIssues: remoteIssueSearchResults,
+        remoteIssues: filterInboxChatConversations(remoteIssueSearchResults, showChatConversations),
         issueFilters,
         currentUserId,
         enableRoutineVisibilityFilter: true,
@@ -1450,6 +1461,7 @@ function StreamlinedInbox() {
       liveIssueIds,
       normalizedSearchQuery,
       remoteIssueSearchResults,
+      showChatConversations,
     ],
   );
   const nonInboxSearchIssueIds = useMemo(
@@ -2379,7 +2391,7 @@ function StreamlinedInbox() {
   const unreadIssueIds = markAllReadIssues
     .map((issue) => issue.id);
   const canMarkAllRead = unreadIssueIds.length > 0;
-  const activeIssueFilterCount = countActiveIssueFilters(issueFilters, true);
+  const activeIssueFilterCount = countActiveIssueFilters(issueFilters, true) + Number(showChatConversations && tab !== "blocked");
   const activeInboxScopeFilterCount = tab === "all"
     ? Number(allCategoryFilter !== "everything")
       + Number(showApprovalsCategory && allApprovalFilter !== "all")
@@ -2565,6 +2577,8 @@ function StreamlinedInbox() {
                 currentUserId={currentUserId}
                 enableExternalObjectFilters={externalObjectsEnabled}
                 enableRoutineVisibilityFilter
+                showChatConversations={showChatConversations}
+                onShowChatConversationsChange={setShowChatConversations}
                 buttonVariant="outline"
                 iconOnly
                 workspaces={isolatedWorkspacesEnabled ? executionWorkspaces.filter((w) => w.mode === "isolated_workspace").map((w) => ({ id: w.id, name: w.name })) : undefined}
@@ -2787,7 +2801,7 @@ function StreamlinedInbox() {
                     && blockerAttention?.state === "covered"
                   );
                   const rowStatusIcon = (
-                    <StatusIcon status={issue.status} externalConversationState={issue.externalConversationState} blockerAttention={blockerAttention} size="md" />
+                    <StatusIcon status={issue.status} originKind={issue.originKind} externalConversationState={issue.externalConversationState} blockerAttention={blockerAttention} size="md" />
                   );
                   return (
                     <IssueRow
@@ -2886,7 +2900,7 @@ function StreamlinedInbox() {
                             <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
                           </button>
                         ) : (
-                          <StatusIcon status={issue.status} externalConversationState={issue.externalConversationState} blockerAttention={blockerAttention} size="md" />
+                          <StatusIcon status={issue.status} originKind={issue.originKind} externalConversationState={issue.externalConversationState} blockerAttention={blockerAttention} size="md" />
                         )
                       ) : undefined}
                       unreadState={isUnread ? "visible" : isFading ? "fading" : "hidden"}

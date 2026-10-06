@@ -106,6 +106,7 @@ describeEmbeddedPostgres("issueReferenceService", () => {
         id: targetTwoId,
         companyId,
         title: "Target two",
+        originKind: "chat_channel",
         status: "todo",
         priority: "medium",
         identifier: "PAP-2",
@@ -122,6 +123,7 @@ describeEmbeddedPostgres("issueReferenceService", () => {
         id: inboundIssueId,
         companyId,
         title: "Inbound reference",
+        originKind: "chat_channel",
         description: "This one depends on PAP-1.",
         status: "in_progress",
         priority: "high",
@@ -160,6 +162,8 @@ describeEmbeddedPostgres("issueReferenceService", () => {
     const summary = await refs.listIssueReferenceSummary(sourceIssueId);
 
     expect(summary.outbound.map((item) => item.issue.identifier)).toEqual(["PAP-2", "PAP-3"]);
+    expect(summary.outbound[0]?.issue.originKind).toBe("chat_channel");
+    expect(summary.inbound[0]?.issue.originKind).toBe("chat_channel");
     expect(summary.outbound[0]?.mentionCount).toBe(2);
     expect(summary.outbound[0]?.sources.map((source) => source.label)).toEqual(["title", "comment"]);
     expect(summary.outbound[1]?.mentionCount).toBe(2);

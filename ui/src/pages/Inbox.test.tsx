@@ -389,6 +389,48 @@ describe("Inbox toolbar", () => {
     container.remove();
   });
 
+  it.each([true, false].flatMap((streamlined) => ["mine", "recent", "unread", "all"].map((tab) => [tab, streamlined] as const)))(
+    "hides chat rows and search supplements in %s (Streamlined=%s) until the visibility toggle is enabled",
+    async (tab, streamlined) => {
+      apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: streamlined });
+      routerMock.location.pathname = `/inbox/${tab}`;
+      const task = createIssue({ id: "task", title: "Normal task", myLastTouchAt: new Date(), isUnreadForMe: true });
+      const chat = createIssue({ id: "chat", identifier: "TIC-4", title: "Chat greeting", originKind: "chat_channel", status: "in_progress", myLastTouchAt: new Date(), isUnreadForMe: true });
+      // Deliberately return inclusive/stale rows to exercise the board's guard too.
+      apiMocks.issuesList.mockResolvedValue([task, chat]);
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+      const root = createRoot(container);
+      try {
+        await act(async () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+        await vi.waitFor(() => expect(container.textContent).toContain("Normal task"));
+        expect(container.textContent).not.toContain("Chat greeting");
+        expect(apiMocks.issuesList).toHaveBeenCalledWith("company-1", expect.objectContaining({ excludeChatConversations: true }));
+
+        const search = container.querySelector<HTMLInputElement>('input[type="search"]')!;
+        act(() => {
+          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(search, "Chat greeting");
+          search.dispatchEvent(new Event("input", { bubbles: true }));
+        });
+        await vi.waitFor(() => expect(apiMocks.issuesList).toHaveBeenCalledWith("company-1", expect.objectContaining({ q: "Chat greeting", excludeChatConversations: true })));
+        expect(container.textContent).not.toContain("Chat greeting");
+
+        await act(async () => container.querySelector<HTMLButtonElement>('button[title="Filter"]')!.click());
+        const chatToggle = Array.from(document.querySelectorAll("label"))
+          .find((label) => label.textContent === "Show chat conversations")!.querySelector<HTMLButtonElement>('[role="checkbox"]')!;
+        await act(async () => chatToggle.click());
+        await vi.waitFor(() => expect(container.textContent).toContain("Chat greeting"));
+        expect(apiMocks.issuesList).toHaveBeenCalledWith("company-1", expect.objectContaining({ includeChatConversations: true, excludeChatConversations: false }));
+        expect(container.querySelector('[aria-label="Chat conversation"]')).not.toBeNull();
+        expect(container.querySelector('.motion-safe\\:animate-spin')).toBeNull();
+        await act(async () => chatToggle.click());
+        await vi.waitFor(() => expect(container.textContent).not.toContain("Chat greeting"));
+      } finally {
+        act(() => root.unmount());
+        queryClient.clear();
+      }
+    },
+  );
+
   it("restores the legacy toolbar and issue-row presentation when Streamlined UI is off", async () => {
     routerMock.location.pathname = "/inbox/mine";
     apiMocks.experimentalSettings.mockResolvedValue({

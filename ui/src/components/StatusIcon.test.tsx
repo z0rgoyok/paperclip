@@ -128,3 +128,22 @@ describe("Slack idle status presentation", () => {
     expect(renderToStaticMarkup(<IssueStatusBadge status="done" externalConversationState="waiting" />)).toContain(">Done<");
   });
 });
+
+describe("chat conversation presentation", () => {
+  it.each(["todo", "in_progress", "in_review", "done"])("renders a static chat indicator for %s across icons and badges", (status) => {
+    for (const element of [<StatusIcon status={status} originKind="chat_channel" showLabel />, <IssueStatusBadge status={status} originKind="chat_channel" />]) {
+      const html = renderToStaticMarkup(element);
+      expect(html).toContain("Chat conversation");
+      expect(html).toContain("lucide-message-square");
+      expect(html).not.toContain("animate-spin");
+    }
+  });
+
+  it("retains blocked attention and ordinary task progress", () => {
+    const blocked = renderToStaticMarkup(<StatusIcon status="blocked" originKind="chat_channel" />);
+    expect(blocked).toContain("Blocked");
+    expect(blocked).toContain("lucide-circle-minus");
+    expect(blocked).not.toContain("lucide-message-square");
+    expect(renderToStaticMarkup(<StatusIcon status="in_progress" originKind="manual" />)).toContain("animate-spin");
+  });
+});
