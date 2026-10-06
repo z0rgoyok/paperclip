@@ -102,6 +102,7 @@ import {
   nativeChatWorkspaceCwd,
 } from "../services/native-runtime/native-chat-workspace.js";
 import { deliverReconciledExecutions } from "../services/execution-recovery-resolution.js";
+import { getExecutionBlocker } from "../services/execution-blocker.js";
 import {
   unadmittedChatWakeupCondition,
   authorizeFailedChatRunRetryWake,
@@ -56113,10 +56114,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         ...context,
         action: action!,
         genericWake,
-        resolve: () =>
+        resolve: (overrides: Record<string, unknown> = {}) =>
           api
             .post(`/api/issues/${context.issue.id}/recovery-actions/resolve`)
-            .send(body),
+            .send({ ...body, ...overrides }),
+        body,
         async cleanup() {
           try {
             await db
@@ -56140,6 +56142,86 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         },
       };
     }
+
+    it("clears a cancelled chat hold without replay and admits only new authorized input", async () => {
+      const context = await fixture();
+      try {
+        await db.update(heartbeatRuns).set({ status: "cancelled", errorCode: "cancelled" })
+          .where(eq(heartbeatRuns.id, context.runId));
+        await db.update(issueRecoveryActions).set({ status: "resolved", outcome: "blocked",
+          evidence: { runId: context.runId, automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } },
+        }).where(eq(issueRecoveryActions.id, context.action.id));
+        expect(await getExecutionBlocker(db, context.fixture.companyId, context.issue.id)).not.toBeNull();
+        await context.resolve().expect(200);
+        const [resolved] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, context.action.id));
+        expect(resolved!.evidence).not.toHaveProperty("automaticRecovery");
+        expect(resolved!.evidence).toMatchObject({ continuationDelivery: "awaiting_new_chat_input",
+          executionReconciliation: { runId: context.runId, providerStopped: true } });
+        await context.resolve().expect(200);
+        await deliverReconciledExecutions(db, context.genericWake);
+        expect(context.genericWake).not.toHaveBeenCalled();
+        expect(context.wakeup).not.toHaveBeenCalled();
+        expect(await db.select().from(chatActions).where(and(eq(chatActions.endpointId, context.endpoint.id),
+          eq(chatActions.kind, "failed_run_retry")))).toEqual([]);
+        expect(await getExecutionBlocker(db, context.fixture.companyId, context.issue.id)).toBeNull();
+        await deliverMessage({
+          callbacks: context.runtime.configurations.get(context.endpoint.id)!.callbacks,
+          endpointId: context.endpoint.id, provider: "slack", thread: context.thread.thread,
+          message: makeMessage({ id: "178900091.200001", text: "@maya fresh authorized input", mentioned: true,
+            userId: "U-SAFE-PROGRESS" }), trigger: "mention",
+        });
+        expect(context.wakeup).toHaveBeenCalledTimes(1);
+        const [, opts] = context.wakeup.mock.calls[0]!;
+        expect(opts.payload).not.toHaveProperty("retryOfRunId");
+        const [previous] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, context.runId));
+        expect(opts.payload!.commentId).not.toBe(previous!.contextSnapshot!.wakeCommentId);
+        await db.transaction(tx => opts.durableChatRequest!.authorize(tx));
+        await expect(db.transaction(tx => context.service.prepareFailedChatRunRetry(tx, {
+          companyId: context.fixture.companyId, issueId: context.issue.id,
+          agentId: context.fixture.assignedAgentId, failedRunId: context.runId, initiatedByUserId: "owner-user",
+        }))).rejects.toMatchObject({ status: 409 });
+      } finally { await context.cleanup(); }
+    });
+
+    it.each(["missing evidence", "unconfirmed remote stop", "live environment"] as const)(
+      "refuses cancelled chat reconciliation with %s", async (mode) => {
+        const context = await fixture();
+        try {
+          await db.update(heartbeatRuns).set({ status: "cancelled", errorCode: "cancelled",
+            ...(mode === "unconfirmed remote stop" ? { resultJson: { remoteStopConfirmed: false } } : {}),
+          }).where(eq(heartbeatRuns.id, context.runId));
+          if (mode === "live environment") await db.insert(environmentLeases).values({
+            companyId: context.fixture.companyId, heartbeatRunId: context.runId,
+            provider: "local", status: "active",
+          });
+          const response = await context.resolve(mode === "missing evidence" ? {
+            executionReconciliation: { ...context.body.executionReconciliation, providerStopped: false },
+          } : {});
+          expect(response.status).toBe(mode === "missing evidence" ? 400 : 409);
+          expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, context.action.id)))[0])
+            .toEqual(context.action);
+          expect(await getExecutionBlocker(db, context.fixture.companyId, context.issue.id)).not.toBeNull();
+          expect(context.wakeup).not.toHaveBeenCalled();
+          expect(context.genericWake).not.toHaveBeenCalled();
+        } finally { await context.cleanup(); }
+      },
+    );
+
+    it.each(["failed", "timed_out"] as const)("retains exact retry after %s chat reconciliation", async (status) => {
+      const context = await fixture();
+      try {
+        await db.update(heartbeatRuns).set({ status, errorCode: status === "timed_out" ? "timeout" : "adapter_failed" })
+          .where(eq(heartbeatRuns.id, context.runId));
+        await context.resolve().expect(200);
+        expect(context.wakeup).toHaveBeenCalledTimes(1);
+        expect(context.genericWake).not.toHaveBeenCalled();
+        const [retry] = await db.select().from(chatActions).where(and(eq(chatActions.endpointId, context.endpoint.id),
+          eq(chatActions.kind, "failed_run_retry")));
+        expect(retry!.payload.failedRunId).toBe(context.runId);
+        expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, context.action.id)))[0]!.evidence)
+          .toMatchObject({ continuationDelivery: "delegated" });
+      } finally { await context.cleanup(); }
+    });
 
     it.each(["concurrent", "lost_scheduler_receipt"] as const)(
       "keeps one exact chat delivery owner through %s reconciliation",

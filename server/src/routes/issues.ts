@@ -9273,12 +9273,13 @@ export function issueRoutes(
           { source: "recovery_action_resolution" },
         );
 
+        let reconciledRun: Awaited<ReturnType<typeof validateExecutionReconciliation>> | null = null;
         if (
           sourceIssueStatus === "todo" &&
           requiresExecutionReconciliation(activeRecoveryAction.cause)
         ) {
           assertBoard(req);
-          await validateExecutionReconciliation({
+          reconciledRun = await validateExecutionReconciliation({
             db: tx as unknown as Db,
             companyId: lockedIssue.companyId,
             issueId: lockedIssue.id,
@@ -9295,6 +9296,7 @@ export function issueRoutes(
         }
 
         let chatRetry: { actionId: string; issueId: string } | null = null;
+        let awaitNewChatInput = false;
         if (outcome === "restored" && sourceIssueStatus === "todo") {
           const [chatBinding] = await tx
             .select({ id: chatConversations.id })
@@ -9308,7 +9310,15 @@ export function issueRoutes(
               ),
             )
             .limit(1);
-          if (chatBinding) {
+          if (chatBinding && reconciledRun?.status === "cancelled") {
+            // Board evidence clears the hold, never replays a cancelled chat
+            // request. Admission for the next input rechecks its own access.
+            if (reconciledRun.resultJson?.remoteStopConfirmed === false) {
+              throw conflict("The remote provider stop is still unconfirmed.");
+            }
+            awaitNewChatInput = true;
+          }
+          if (chatBinding && !awaitNewChatInput) {
             // Admit the exact server-owned recovery evidence before resolving
             // either record. The durable worker, not a best-effort generic wake,
             // owns execution after commit and rechecks current chat access.
@@ -9340,8 +9350,8 @@ export function issueRoutes(
         }
 
         if (executionReconciliation) {
-          // The authorized chat retry is the sole durable delivery owner.
-          // Never also enqueue a generic successor that lacks chat provenance.
+          // A retry has its sole durable owner; cancelled chat reconciliation
+          // waits for new input and must not enqueue a generic successor.
           await markExecutionReconciliation(
             tx as unknown as Db,
             activeRecoveryAction,
@@ -9349,7 +9359,7 @@ export function issueRoutes(
             actor.actorId,
             chatRetry
               ? { kind: "chat_failed_run_retry", actionId: chatRetry.actionId }
-              : undefined,
+              : awaitNewChatInput ? { kind: "await_new_chat_input" } : undefined,
           );
         }
         let issue = lockedIssue;
