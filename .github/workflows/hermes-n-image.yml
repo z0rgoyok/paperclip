@@ -1,0 +1,81 @@
+name: Hermes n image
+on:
+  workflow_dispatch:
+    inputs:
+      runtime_bundle:
+        description: Base64 gzip tar of the nonsecret Deploy OS n runtime
+        required: true
+      runtime_sha256:
+        required: true
+      deploy_os_sha:
+        required: true
+permissions: {}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: z0rgoyok/hermes-agent
+          ref: bf2574d0a199804d1fdb6984d4bb9da9aefcbf94
+          path: hermes-source
+      - name: Prepare pinned source and runtime
+        env:
+          RUNTIME_BUNDLE: ${{ inputs.runtime_bundle }}
+          RUNTIME_SHA: ${{ inputs.runtime_sha256 }}
+          OPS_SHA: ${{ inputs.deploy_os_sha }}
+        run: |
+          set -eu
+          mkdir -p context/hermes context/runtime
+          git -C hermes-source archive HEAD | tar -x -C context/hermes
+          python3 - <<'PY'
+          import base64,hashlib,io,os,pathlib,re,tarfile
+          blob=base64.b64decode(os.environ['RUNTIME_BUNDLE'],validate=True)
+          assert hashlib.sha256(blob).hexdigest()==os.environ['RUNTIME_SHA']
+          assert re.fullmatch('[0-9a-f]{40}',os.environ['OPS_SHA'])
+          root=pathlib.Path('context/runtime')
+          with tarfile.open(fileobj=io.BytesIO(blob),mode='r:gz') as archive:
+            for member in archive.getmembers():
+              assert member.isfile() and not pathlib.PurePosixPath(member.name).is_absolute() and '..' not in pathlib.PurePosixPath(member.name).parts
+              target=root/member.name;target.parent.mkdir(parents=True,exist_ok=True)
+              target.write_bytes(archive.extractfile(member).read())
+          source=pathlib.Path('context/hermes/Dockerfile').read_text()
+          sqlite=source.split('FROM ghcr.io/astral-sh/uv:',1)[0]
+          pathlib.Path('context/Dockerfile').write_text(sqlite+pathlib.Path('context/runtime/Dockerfile.api').read_text())
+          PY
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e
+      - name: Build and publish amd64 image
+        uses: docker/build-push-action@v7
+        id: image
+        with:
+          context: context
+          push: true
+          platforms: linux/amd64
+          tags: ghcr.io/z0rgoyok/hermes-n:${{ inputs.deploy_os_sha }}
+          build-args: |
+            HERMES_SOURCE_SHA=bf2574d0a199804d1fdb6984d4bb9da9aefcbf94
+            DEPLOY_OS_SHA=${{ inputs.deploy_os_sha }}
+      - name: Record measured image and provenance
+        env:
+          IMAGE: ghcr.io/z0rgoyok/hermes-n@${{ steps.image.outputs.digest }}
+          OPS_SHA: ${{ inputs.deploy_os_sha }}
+        run: |
+          docker pull "$IMAGE" >/dev/null
+          docker image inspect "$IMAGE" --format '{{.Size}}' > image-size.txt
+          python3 - <<'PY'
+          import json,os,pathlib
+          pathlib.Path('hermes-n-image.json').write_text(json.dumps({'image':os.environ['IMAGE'],'hermes_source_sha':'bf2574d0a199804d1fdb6984d4bb9da9aefcbf94','deploy_os_sha':os.environ['OPS_SHA'],'unpacked_bytes':int(pathlib.Path('image-size.txt').read_text())},indent=2))
+          PY
+      - uses: actions/upload-artifact@v7
+        with:
+          name: hermes-n-image
+          path: hermes-n-image.json
