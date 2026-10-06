@@ -34344,6 +34344,24 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     if (progress && ["queued", "working", "completed"].includes(progress)) {
       const endpoint = await endpointRecord(publication.endpointId);
       if (progress !== "completed" && endpoint?.endpoint.provider === "imessage-photon") return "iMessage uses typing instead of progress bubbles";
+      // Hermes emits tool events after admission. A working bubble posted here
+      // would retain its earlier Telegram position when edited into the final
+      // answer. Group runs use typing until tools/final text are published.
+      if (progress !== "completed" && endpoint?.endpoint.provider === "telegram") {
+        const runId = runIdFromMilestonePublication(publication);
+        const [runTarget] = runId ? await db
+          .select({ adapterType: agents.adapterType, isDirectMessage: chatConversations.isDirectMessage })
+          .from(heartbeatRuns)
+          .innerJoin(agents, eq(agents.id, heartbeatRuns.agentId))
+          .innerJoin(chatConversations, and(
+            eq(chatConversations.id, publication.conversationId),
+            eq(chatConversations.companyId, heartbeatRuns.companyId),
+          ))
+          .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, publication.companyId)))
+          .limit(1) : [];
+        if (runTarget?.adapterType === "hermes_gateway" && !runTarget.isDirectMessage)
+          return "Hermes Telegram groups use typing until tools and final reply";
+      }
       // Ambient Telegram groups start a run for every message and the agent
       // may stay silent (NO_REPLY). A queued/working bubble or a generic
       // "completed this turn" note would then be the only visible trace, so

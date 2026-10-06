@@ -63931,6 +63931,45 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     90_000,
   );
 
+  it("posts a Hermes Telegram group final after its tools without an early reply bubble", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service } = await configuredTelegramEndpoint(fixture, { toolActivityMinEditIntervalMs: 0 });
+    await db.update(chatEndpoints).set({ status: "active" }).where(eq(chatEndpoints.id, endpoint.id));
+    await db.update(agents).set({ adapterType: "hermes_gateway" }).where(eq(agents.id, endpoint.assignedAgentId));
+    const chatId = "-10077110079";
+    await db.insert(chatEndpointResources).values({ companyId: fixture.companyId, endpointId: endpoint.id,
+      type: "chat", providerResourceId: chatId, label: "Explicit Hermes group", availability: "available", enabled: true,
+      showToolActivity: true, respondWithoutMention: false });
+    const group = makeThread({ channelId: chatId, id: `telegram:${chatId}`, name: "Explicit Hermes group" });
+    await deliverMessage({ callbacks, endpointId: endpoint.id, provider: "telegram", thread: group.thread,
+      message: makeMessage({ id: `${chatId}:1`, text: "@maya check tools", userId: "hermes-order-user", mentioned: true }), trigger: "mention" });
+    const [conversation] = await service.listConversations(endpoint.id);
+    if (!conversation) throw new Error("Expected Hermes conversation");
+    const providerRuntime = runtime.endpoints.get(endpoint.id)!;
+    providerRuntime.posts.length = 0; providerRuntime.edits.length = 0;
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: fixture.companyId, agentId: endpoint.assignedAgentId,
+      status: "running", startedAt: new Date(), contextSnapshot: await chatWakeContext({ endpointId: endpoint.id,
+        issueId: conversation.issueId, provider: "telegram", providerMessageId: `${chatId}:1` }) });
+    await enqueueChatRunMilestones(db);
+    await service.processPendingPublications();
+    expect(providerRuntime.posts).toEqual([]);
+    service.observeRunOutput({ companyId: fixture.companyId, runId, agentId: endpoint.assignedAgentId,
+      issueId: conversation.issueId, adapterType: "hermes_gateway", stream: "stdout",
+      chunk: '[hermes-gateway:event] run=remote event=tool.started data={"tool":"terminal","preview":"git status"}\n' });
+    await service.flushToolActivity();
+    expect(providerRuntime.posts).toEqual([{ threadId: group.thread.id, text: "🔧 terminal: git status" }]);
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date(), resultJson: {
+      presentationDecision: { chosenSource: "final_agent_message", commentAction: "create", reasonCodes: [] } } }).where(eq(heartbeatRuns.id, runId));
+    await addSelectedChatFinal({ agentId: endpoint.assignedAgentId, body: "Hermes final below tools.",
+      companyId: fixture.companyId, issueId: conversation.issueId, runId });
+    await enqueueChatRunMilestones(db);
+    await service.processPendingPublications();
+    expect(providerRuntime.posts).toEqual([{ threadId: group.thread.id, text: "🔧 terminal: git status" },
+      { threadId: group.thread.id, text: "Hermes final below tools." }]);
+    expect(providerRuntime.edits).toEqual([]);
+  });
+
   it.each(["codex_local", "hermes_gateway"])("relays %s live tool activity per run, masks secrets, and deletes it for NO_REPLY", async (adapterType) => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, runtime, service } =
