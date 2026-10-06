@@ -1111,11 +1111,15 @@ export function companySearchService(db: Db) {
       const paged = results.slice(offset, offset + limit).map(stripInternalSortFields);
       const issueIds = paged.flatMap((result) => result.issue ? [result.issue.id] : []);
       if (issueIds.length > 0) {
-        const states = await db.select({ id: issues.id, state: externalConversationStateSql() }).from(issues)
+        const states = await db.select({ id: issues.id, state: externalConversationStateSql(), originKind: issues.originKind }).from(issues)
           .where(and(eq(issues.companyId, companyId), inArray(issues.id, issueIds)));
-        const byId = new Map(states.map((row) => [row.id, row.state]));
+        const byId = new Map(states.map((row) => [row.id, row]));
         for (const result of paged) {
-          if (result.issue) result.issue.externalConversationState = byId.get(result.issue.id) ?? null;
+          if (result.issue) {
+            const metadata = byId.get(result.issue.id);
+            result.issue.externalConversationState = metadata?.state ?? null;
+            result.issue.originKind = metadata?.originKind;
+          }
         }
       }
       return {

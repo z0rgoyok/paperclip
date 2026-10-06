@@ -222,7 +222,7 @@ export function useInboxBadge(companyId: string | null | undefined) {
   });
   usePublishSharedQueryData(sharedDashboard, dashboard, dashboardUpdatedAt);
 
-  const mineIssuesQueryKey = queryKeys.issues.listMineByMe(companyId!);
+  const mineIssuesQueryKey = [...queryKeys.issues.listMineByMe(companyId!), "without-chat-conversations"] as const;
   const sharedMineIssues = useSharedPollingQuery({
     companyId,
     resourceKey: "inbox-badge:mine-issues",
@@ -233,6 +233,7 @@ export function useInboxBadge(companyId: string | null | undefined) {
     queryKey: mineIssuesQueryKey,
     queryFn: () =>
       issuesApi.list(companyId!, {
+        excludeChatConversations: true,
         touchedByUserId: "me",
         inboxArchivedByUserId: "me",
         status: INBOX_ISSUE_STATUSES,

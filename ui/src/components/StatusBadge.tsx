@@ -83,9 +83,10 @@ export function AgentStatusCapsule({ status }: { status: string }) {
  * Distinct from the generic {@link StatusBadge} so run/goal/approval badges are
  * unaffected.
  */
-export function IssueStatusBadge({ status: taskStatus, externalConversationState }: { status: string; externalConversationState?: "active" | "waiting" | null }) {
+export function IssueStatusBadge({ status: taskStatus, externalConversationState, originKind }: { status: string; originKind?: string | null; externalConversationState?: "active" | "waiting" | null }) {
   const status = taskStatus === "in_review" && externalConversationState === "waiting" ? "idle" : taskStatus;
-  const cssVar = taskStatusVar[status] ?? taskStatusVarDefault;
+  const isChat = originKind === "chat_channel" && status !== "blocked";
+  const cssVar = isChat ? taskStatusVarDefault : taskStatusVar[status] ?? taskStatusVarDefault;
   return (
     <span
       className={cn(
@@ -94,8 +95,8 @@ export function IssueStatusBadge({ status: taskStatus, externalConversationState
       )}
       style={scStyle(cssVar)}
     >
-      <StatusGlyph status={status} size="sm" />
-      {sentenceCaseStatus(status)}
+      <StatusGlyph status={status} originKind={originKind} size="sm" />
+      {isChat ? "Chat conversation" : sentenceCaseStatus(status)}
     </span>
   );
 }

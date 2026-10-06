@@ -79,6 +79,7 @@ export interface CaseIssueLink {
   role: CaseLinkRole;
   createdAt: string;
   issue: {
+    originKind?: string;
     id: string;
     identifier: string;
     title: string;
@@ -140,6 +141,7 @@ export type CaseEventKind =
 
 /** Run→issue attribution shared by feed rows and revisions. */
 export interface CaseAttributionIssue {
+  originKind?: string;
   id: string;
   identifier: string;
   title: string;

@@ -54,6 +54,7 @@ function toIssueSummary(row: {
   relatedIssueIdentifier: string | null;
   relatedIssueTitle: string;
   relatedIssueStatus: IssueRelationIssueSummary["status"];
+  relatedIssueOriginKind?: string;
   relatedIssuePriority: IssueRelationIssueSummary["priority"];
   relatedIssueAssigneeAgentId: string | null;
   relatedIssueAssigneeUserId: string | null;
@@ -63,6 +64,7 @@ function toIssueSummary(row: {
     identifier: row.relatedIssueIdentifier,
     title: row.relatedIssueTitle,
     status: row.relatedIssueStatus,
+    originKind: row.relatedIssueOriginKind,
     priority: row.relatedIssuePriority,
     assigneeAgentId: row.relatedIssueAssigneeAgentId,
     assigneeUserId: row.relatedIssueAssigneeUserId,
@@ -353,6 +355,7 @@ export function issueReferenceService(db: Db) {
             relatedIssueIdentifier: issues.identifier,
             relatedIssueTitle: issues.title,
             relatedIssueStatus: issues.status,
+            relatedIssueOriginKind: issues.originKind,
             relatedIssuePriority: issues.priority,
             relatedIssueAssigneeAgentId: issues.assigneeAgentId,
             relatedIssueAssigneeUserId: issues.assigneeUserId,
@@ -373,6 +376,7 @@ export function issueReferenceService(db: Db) {
             relatedIssueIdentifier: issues.identifier,
             relatedIssueTitle: issues.title,
             relatedIssueStatus: issues.status,
+            relatedIssueOriginKind: issues.originKind,
             relatedIssuePriority: issues.priority,
             relatedIssueAssigneeAgentId: issues.assigneeAgentId,
             relatedIssueAssigneeUserId: issues.assigneeUserId,
@@ -394,6 +398,7 @@ export function issueReferenceService(db: Db) {
         relatedIssueIdentifier: string | null;
         relatedIssueTitle: string;
         relatedIssueStatus: IssueRelationIssueSummary["status"];
+        relatedIssueOriginKind?: string;
         relatedIssuePriority: IssueRelationIssueSummary["priority"];
         relatedIssueAssigneeAgentId: string | null;
         relatedIssueAssigneeUserId: string | null;

@@ -1586,7 +1586,7 @@ function SummaryRow({ label, children }: { label: string; children: React.ReactN
   );
 }
 
-export type LatestRunIssue = { id: string; title: string; status: string; identifier?: string | null };
+export type LatestRunIssue = { id: string; title: string; status: string; originKind?: string | null; identifier?: string | null };
 
 /**
  * The id of the issue a run works on, read from its context snapshot. Newer
@@ -1691,6 +1691,7 @@ function LatestRunCard({
           id: fallbackIssue.id,
           title: fallbackIssue.title,
           status: fallbackIssue.status,
+          originKind: fallbackIssue.originKind,
           identifier: fallbackIssue.identifier,
         })
       : issuesById;
@@ -1732,7 +1733,7 @@ function LatestRunCard({
           <StatusBadge status={run.status} />
           {task ? (
             <>
-              <StatusGlyph status={task.status} size="sm" />
+              <StatusGlyph status={task.status} originKind={task.originKind} size="sm" />
               <span className="font-mono text-xs text-muted-foreground">
                 {task.identifier ?? task.id.slice(0, 8)}
               </span>

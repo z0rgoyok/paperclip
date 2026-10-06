@@ -324,6 +324,7 @@ export function userProfileRoutes(db: Db) {
           identifier: issues.identifier,
           title: issues.title,
           status: issues.status,
+          originKind: issues.originKind,
           priority: issues.priority,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,

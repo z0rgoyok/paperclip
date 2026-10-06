@@ -679,6 +679,7 @@ export function IssueProperties({
       identifier: referenced.identifier,
       title: referenced.title,
       status: referenced.status,
+      originKind: referenced.originKind,
     })) ?? [];
     if (outbound.length > 0) return outbound;
     return referencedIssueIdentifiers.map((identifier) => ({
@@ -693,6 +694,7 @@ export function IssueProperties({
       identifier: referenced.identifier,
       title: referenced.title,
       status: referenced.status,
+      originKind: referenced.originKind,
     })) ?? [],
     [issue.relatedWork?.inbound],
   );
@@ -2116,6 +2118,7 @@ export function IssueProperties({
         identifier: parentIdentifier ?? issue.parentId,
         title: parentTitle ?? "Parent task",
         status: issue.ancestors?.[0]?.status ?? currentParentIssue?.status,
+        originKind: issue.ancestors?.[0]?.originKind ?? currentParentIssue?.originKind,
       }}
       className="min-w-0 max-w-full"
     />
@@ -2172,7 +2175,7 @@ export function IssueProperties({
               setParentOpen(false);
             }}
           >
-            <StatusIcon status={candidate.status} className="h-3 w-3" />
+            <StatusIcon status={candidate.status} originKind={candidate.originKind} className="h-3 w-3" />
             <span className="truncate">
               {candidate.identifier ? `${candidate.identifier} ` : ""}
               {candidate.title}
@@ -2259,7 +2262,7 @@ export function IssueProperties({
               )}
               onClick={() => toggleBlockedBy(candidate.id)}
             >
-              <StatusIcon status={candidate.status} className="h-3 w-3" />
+              <StatusIcon status={candidate.status} originKind={candidate.originKind} className="h-3 w-3" />
               <span className="truncate">
                 {candidate.identifier ? `${candidate.identifier} ` : ""}
                 {candidate.title}
@@ -2297,7 +2300,7 @@ export function IssueProperties({
             className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent/50"
             onClick={() => setSubtasksOpen(false)}
           >
-            <StatusIcon status={child.status} className="h-3 w-3" />
+            <StatusIcon status={child.status} originKind={child.originKind} className="h-3 w-3" />
             <span className="min-w-0 truncate">
               {child.identifier ? `${child.identifier} ` : ""}
               {child.title}
@@ -2334,7 +2337,7 @@ export function IssueProperties({
       >
         <PropertyRow label="Status">
           <StatusIcon
-            status={issue.status} externalConversationState={issue.externalConversationState}
+            status={issue.status} originKind={issue.originKind} externalConversationState={issue.externalConversationState}
             className="size-3"
             blockerAttention={issue.blockerAttention}
             onChange={(status) => onUpdate({ status })}

@@ -99,6 +99,7 @@ export type IssueListFilters = {
   createdFromIssueId?: string;
   includeRoutineExecutions?: boolean;
   includeChatConversations?: boolean;
+  excludeChatConversations?: boolean;
   includeBlockedBy?: boolean;
   includeBlockedInboxAttention?: boolean;
   includeLiveDescendantSummary?: boolean;
@@ -141,6 +142,8 @@ function issueListSearchParams(filters?: IssueListFilters) {
   if (filters?.createdFromIssueId) params.set("createdFromIssueId", filters.createdFromIssueId);
   if (filters?.includeRoutineExecutions)
     params.set("includeRoutineExecutions", "true");
+  if (filters?.excludeChatConversations)
+    params.set("excludeChatConversations", "true");
   if (filters?.includeChatConversations)
     params.set("includeChatConversations", "true");
   if (filters?.includeBlockedBy) params.set("includeBlockedBy", "true");

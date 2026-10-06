@@ -1,3 +1,4 @@
+import { filterInboxChatConversations } from "./chat-conversation";
 import type {
   Approval,
   DashboardSummary,
@@ -1292,7 +1293,7 @@ export function computeInboxBadgeData({
   const visibleJoinRequests = joinRequests.filter(
     (jr) => !isInboxEntityDismissed(dismissedAtByKey, `join:${jr.id}`, jr.updatedAt ?? jr.createdAt),
   ).length;
-  const visibleMineIssues = mineIssues.filter((issue) => issue.isUnreadForMe).length;
+  const visibleMineIssues = filterInboxChatConversations(mineIssues).filter((issue) => issue.isUnreadForMe).length;
   const agentErrorCount = dashboard?.agents.error ?? 0;
   const monthBudgetCents = dashboard?.costs.monthBudgetCents ?? 0;
   const monthUtilizationPercent = dashboard?.costs.monthUtilizationPercent ?? 0;

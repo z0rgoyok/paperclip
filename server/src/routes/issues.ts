@@ -8109,6 +8109,9 @@ export function issueRoutes(
         req.query.includePluginOperations === "true" ||
         req.query.includePluginOperations === "1",
       // Agents work their own queue, which includes chat conversations.
+      excludeChatConversations:
+        req.actor.type === "board" &&
+        (req.query.excludeChatConversations === "true" || req.query.excludeChatConversations === "1"),
       includeChatConversations:
         req.actor.type === "agent" ||
         req.query.includeChatConversations === "true" ||
@@ -8338,6 +8341,9 @@ export function issueRoutes(
       includePluginOperations:
         req.query.includePluginOperations === "true" ||
         req.query.includePluginOperations === "1",
+      excludeChatConversations:
+        req.actor.type === "board" &&
+        (req.query.excludeChatConversations === "true" || req.query.excludeChatConversations === "1"),
       includeChatConversations:
         req.actor.type === "agent" ||
         req.query.includeChatConversations === "true" ||
@@ -8663,6 +8669,7 @@ export function issueRoutes(
         identifier: ancestor.identifier,
         title: ancestor.title,
         status: ancestor.status,
+        originKind: ancestor.originKind,
         priority: ancestor.priority,
       })),
       project: project

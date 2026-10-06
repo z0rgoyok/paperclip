@@ -2,8 +2,9 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, issues } from "@paperclipai/db";
+import { agents, companies, createDb, issues, issueRelations } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { issueService } from "../services/issues.js";
 import { errorHandler } from "../middleware/index.js";
 import { __clearIssueListResponseCacheForTests, issueRoutes } from "../routes/issues.js";
 
@@ -55,8 +56,8 @@ const support = await getEmbeddedPostgresTestSupport();
       permissions: {},
     });
     await db.insert(issues).values([
-      { id: taskId, companyId, title: "Task", status: "todo", priority: "medium", assigneeAgentId: agentId },
-      { id: chatId, companyId, title: "Chat", status: "todo", priority: "medium", assigneeAgentId: agentId, originKind: "chat_channel", originId: `chat:${chatId}` },
+      { id: taskId, companyId, createdByUserId: "local-board", title: "Task", status: "todo", priority: "medium", assigneeAgentId: agentId },
+      { id: chatId, companyId, createdByUserId: "local-board", title: "Chat", status: "todo", priority: "medium", assigneeAgentId: agentId, originKind: "chat_channel", originId: `chat:${chatId}` },
     ]);
     return { companyId, agentId, taskId, chatId };
   }
@@ -78,10 +79,46 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(shown.body.map((issue: { id: string }) => issue.id).sort()).toEqual([f.taskId, f.chatId].sort());
   });
 
+  it("excludes board Inbox chats before pagination and from counts, with personal and search list filters", async () => {
+    const f = await seed();
+    const app = createApp(boardActor(f.companyId));
+    for (const personal of ["touchedByUserId=me", "inboxArchivedByUserId=me", ""]) {
+      const res = await request(app).get(`/api/companies/${f.companyId}/issues?${personal}&excludeChatConversations=true&limit=1&sortField=updated&sortDir=desc`).expect(200);
+      expect(res.body.map((issue: { id: string }) => issue.id)).toEqual([f.taskId]);
+    }
+    const search = await request(app).get(`/api/companies/${f.companyId}/issues?q=Chat&excludeChatConversations=true`).expect(200);
+    expect(search.body).toEqual([]);
+    const service = issueService(db);
+    expect(await service.count(f.companyId, { touchedByUserId: "local-board", excludeChatConversations: true })).toBe(1);
+    const shown = await request(app).get(`/api/companies/${f.companyId}/issues?touchedByUserId=me&includeChatConversations=true`).expect(200);
+    expect(shown.body.map((issue: { id: string }) => issue.id).sort()).toEqual([f.taskId, f.chatId].sort());
+  });
+
+  it("keeps blocked chat conversations in the Blocked list and count", async () => {
+    const f = await seed();
+    const { eq } = await import("drizzle-orm");
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, f.chatId));
+    const app = createApp(boardActor(f.companyId));
+    const res = await request(app).get(`/api/companies/${f.companyId}/issues?attention=blocked&excludeChatConversations=true`).expect(200);
+    expect(res.body.map((issue: { id: string }) => issue.id)).toEqual([f.chatId]);
+    const count = await request(app).get(`/api/companies/${f.companyId}/issues/count?attention=blocked&excludeChatConversations=true`).expect(200);
+    expect(count.body.count).toBe(1);
+  });
+
+  it("keeps conversation metadata in dependency and ancestor references", async () => {
+    const f = await seed();
+    await db.insert(issueRelations).values({ companyId: f.companyId, issueId: f.chatId, relatedIssueId: f.taskId, type: "blocks" });
+    const service = issueService(db);
+    expect((await service.getRelationSummaries(f.taskId)).blockedBy[0]).toMatchObject({ id: f.chatId, originKind: "chat_channel" });
+    const { eq } = await import("drizzle-orm");
+    await db.update(issues).set({ parentId: f.chatId }).where(eq(issues.id, f.taskId));
+    expect((await service.getAncestors(f.taskId))[0]).toMatchObject({ id: f.chatId, originKind: "chat_channel" });
+  });
+
   it("always includes chat conversations for an agent working its own queue", async () => {
     const f = await seed();
     const app = createApp({ type: "agent", agentId: f.agentId, companyId: f.companyId, source: "agent_key" });
-    const res = await request(app).get(`/api/companies/${f.companyId}/issues?assigneeAgentId=${f.agentId}`).expect(200);
+    const res = await request(app).get(`/api/companies/${f.companyId}/issues?assigneeAgentId=${f.agentId}&excludeChatConversations=true`).expect(200);
     expect(res.body.map((issue: { id: string }) => issue.id).sort()).toEqual([f.taskId, f.chatId].sort());
   });
 });

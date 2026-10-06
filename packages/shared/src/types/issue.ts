@@ -65,6 +65,7 @@ export interface IssueAncestorGoal {
 }
 
 export interface IssueAncestor {
+  originKind?: string;
   id: string;
   identifier: string | null;
   title: string;
@@ -210,6 +211,7 @@ export interface AcceptedPlanDecompositionSummary extends AcceptedPlanDecomposit
 }
 
 export interface IssueRelationIssueSummary {
+  originKind?: string;
   id: string;
   identifier: string | null;
   title: string;
