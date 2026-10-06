@@ -1936,6 +1936,57 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(advancedIssueIds).toContain(legacyContentMachineOperationIssueId);
   });
 
+  it("hides chat conversations from default lists and counts while preserving explicit retrieval", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const projectId = randomUUID();
+    const taskId = randomUUID();
+    const chatId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Chat Runner",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Led", status: "in_progress", leadAgentId: agentId });
+    await db.insert(issues).values([
+      { id: taskId, companyId, projectId, title: "Real task", status: "todo", priority: "medium", assigneeAgentId: agentId },
+      {
+        id: chatId,
+        companyId,
+        projectId,
+        title: "Telegram hello",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        originKind: "chat_channel",
+        originId: "endpoint:thread:1",
+      },
+    ]);
+
+    const ids = async (filters = {}) => (await svc.list(companyId, filters)).map((issue) => issue.id);
+    expect(await ids()).toEqual([taskId]);
+    expect(await ids({ projectId })).toEqual([taskId]);
+    expect(await svc.count(companyId, {})).toBe(1);
+    expect(await ids({ includeChatConversations: true })).toEqual(expect.arrayContaining([taskId, chatId]));
+    expect(await svc.count(companyId, { includeChatConversations: true })).toBe(2);
+    expect(await ids({ originKind: "chat_channel" })).toEqual([chatId]);
+    expect(await ids({ originId: "endpoint:thread:1" })).toEqual([chatId]);
+    expect(await ids({ q: "Telegram" })).toEqual([chatId]);
+  });
+
   it("excludes plugin operation issues from unread inbox counts", async () => {
     const companyId = randomUUID();
     const userId = "board-user";

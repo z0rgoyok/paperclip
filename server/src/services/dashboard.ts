@@ -3,7 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { agents, approvals, companies, costEvents, heartbeatRuns, issues } from "@paperclipai/db";
 import { notFound } from "../errors.js";
 import { budgetService } from "./budgets.js";
-import { executionIssueCondition } from "./issue-visibility.js";
+import { CHAT_CONVERSATION_ORIGIN_KIND, executionIssueCondition } from "./issue-visibility.js";
 
 const DASHBOARD_RUN_ACTIVITY_DAYS = 14;
 
@@ -42,10 +42,14 @@ export function dashboardService(db: Db) {
         .groupBy(agents.status);
 
       const taskRows = await db
-        .select({ status: issues.status, count: sql<number>`count(*)` })
+        .select({
+          status: issues.status,
+          originKind: issues.originKind,
+          count: sql<number>`count(*)`,
+        })
         .from(issues)
         .where(and(eq(issues.companyId, companyId), executionIssueCondition()))
-        .groupBy(issues.status);
+        .groupBy(issues.status, issues.originKind);
 
       const pendingApprovals = await db
         .select({ count: sql<number>`count(*)` })
@@ -72,8 +76,15 @@ export function dashboardService(db: Db) {
         blocked: 0,
         done: 0,
       };
+      // Chat conversations are reported separately so task counters stay task-only.
+      const chatConversationCounts = { open: 0, inProgress: 0 };
       for (const row of taskRows) {
         const count = Number(row.count);
+        if (row.originKind === CHAT_CONVERSATION_ORIGIN_KIND) {
+          if (row.status === "in_progress") chatConversationCounts.inProgress += count;
+          if (row.status !== "done" && row.status !== "cancelled") chatConversationCounts.open += count;
+          continue;
+        }
         if (row.status === "in_progress") taskCounts.inProgress += count;
         if (row.status === "blocked") taskCounts.blocked += count;
         if (row.status === "done") taskCounts.done += count;
@@ -194,6 +205,7 @@ export function dashboardService(db: Db) {
           error: agentCounts.error,
         },
         tasks: taskCounts,
+        chatConversations: chatConversationCounts,
         costs: {
           monthSpendCents,
           monthBudgetCents: company.budgetMonthlyCents,

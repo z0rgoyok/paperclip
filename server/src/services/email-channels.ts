@@ -43,6 +43,7 @@ import { emailConnectionService } from "./email-connections.js";
 import { secretService } from "./secrets.js";
 import { authorizationService } from "./authorization.js";
 import { issueService } from "./issues.js";
+import { resolveChatConversationProjectId } from "./chat-conversation-project.js";
 import { logActivity } from "./activity-log.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
@@ -1313,9 +1314,15 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
             endpoint.companyId,
             endpoint.assignedAgentId,
           );
+          const leadProjectId = await resolveChatConversationProjectId(
+            tx,
+            endpoint.companyId,
+            endpoint.assignedAgentId,
+          );
           const task = await issueService(db).create(
             endpoint.companyId,
             {
+              ...(leadProjectId ? { projectId: leadProjectId } : {}),
               ...placement,
               title: message.subject.slice(0, 200),
               description: `Email conversation for ${endpoint.botExternalId}`,

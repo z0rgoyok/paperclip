@@ -84,6 +84,7 @@ import {
   nativeRunFinalizations,
   environmentLeases,
   principalPermissionGrants,
+  projects,
   toolConnections,
 } from "@paperclipai/db";
 import type { ChatProvider } from "@paperclipai/shared";
@@ -91,6 +92,7 @@ import { isPaperclipExternalChatTurn } from "@paperclipai/adapter-utils/server-u
 import type { Attachment, Author, Message, Thread } from "chat";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
+import { dashboardService } from "../services/dashboard.js";
 import { deliverReconciledExecutions } from "../services/execution-recovery-resolution.js";
 import {
   unadmittedChatWakeupCondition,
@@ -3192,6 +3194,100 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         await service.shutdown();
       }
     }
+  });
+
+  describe("chat conversation kind", () => {
+    async function startConversation(
+      fixture: Awaited<ReturnType<typeof seedCompany>>,
+      chatId: string,
+    ) {
+      const { callbacks, endpoint, service } =
+        await configuredTelegramEndpoint(fixture);
+      const thread = makeThread({
+        channelId: chatId,
+        id: `telegram:${chatId}`,
+        isDM: true,
+        name: "Kind user",
+      });
+      await deliverMessage({
+        callbacks,
+        endpointId: endpoint.id,
+        provider: "telegram",
+        thread: thread.thread,
+        message: makeMessage({
+          id: "9",
+          text: "Please look at this",
+          userId: chatId,
+          raw: {
+            message_id: 9,
+            chat: { id: Number(chatId), type: "private", username: "kind_user" },
+          },
+        }),
+        trigger: "direct_message",
+      });
+      await service.shutdown();
+      const [conversation] = await db
+        .select()
+        .from(chatConversations)
+        .where(eq(chatConversations.endpointId, endpoint.id));
+      const [issue] = await db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, conversation!.issueId));
+      return issue!;
+    }
+
+    it("creates a chat_channel task in the only project the agent leads, hidden from lists and counters until requested", async () => {
+      const fixture = await seedCompany();
+      const [project] = await db
+        .insert(projects)
+        .values({
+          companyId: fixture.companyId,
+          name: "Led project",
+          leadAgentId: fixture.assignedAgentId,
+        })
+        .returning();
+      // A project led by someone else and an archived one never compete.
+      await db.insert(projects).values([
+        { companyId: fixture.companyId, name: "Other lead", leadAgentId: fixture.replacementAgentId },
+        { companyId: fixture.companyId, name: "Archived", leadAgentId: fixture.assignedAgentId, archivedAt: new Date() },
+      ]);
+      const issue = await startConversation(fixture, "88001001");
+      expect(issue.originKind).toBe("chat_channel");
+      expect(issue.projectId).toBe(project!.id);
+
+      const svc = issueService(db);
+      expect((await svc.list(fixture.companyId, {})).map((row) => row.id)).not.toContain(issue.id);
+      expect(await svc.count(fixture.companyId, {})).toBe(0);
+      expect(
+        (await svc.list(fixture.companyId, { includeChatConversations: true })).map((row) => row.id),
+      ).toContain(issue.id);
+      expect(await svc.count(fixture.companyId, { includeChatConversations: true })).toBe(1);
+      expect(
+        (await svc.list(fixture.companyId, { projectId: project!.id })).map((row) => row.id),
+      ).not.toContain(issue.id);
+
+      const summary = await dashboardService(db).summary(fixture.companyId);
+      expect(summary.tasks.open).toBe(0);
+      expect(summary.chatConversations.open).toBe(1);
+    });
+
+    it("leaves the task project-less when the agent leads several projects", async () => {
+      const fixture = await seedCompany();
+      await db.insert(projects).values([
+        { companyId: fixture.companyId, name: "One", leadAgentId: fixture.assignedAgentId },
+        { companyId: fixture.companyId, name: "Two", leadAgentId: fixture.assignedAgentId },
+      ]);
+      const issue = await startConversation(fixture, "88001002");
+      expect(issue.originKind).toBe("chat_channel");
+      expect(issue.projectId).toBeNull();
+    });
+
+    it("leaves the task project-less when the agent leads no project", async () => {
+      const fixture = await seedCompany();
+      const issue = await startConversation(fixture, "88001003");
+      expect(issue.projectId).toBeNull();
+    });
   });
 
   async function configuredDiscordEndpoint(

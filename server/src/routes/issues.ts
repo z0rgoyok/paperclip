@@ -8108,6 +8108,11 @@ export function issueRoutes(
       includePluginOperations:
         req.query.includePluginOperations === "true" ||
         req.query.includePluginOperations === "1",
+      // Agents work their own queue, which includes chat conversations.
+      includeChatConversations:
+        req.actor.type === "agent" ||
+        req.query.includeChatConversations === "true" ||
+        req.query.includeChatConversations === "1",
       includeBlockedBy:
         req.query.includeBlockedBy === "true" ||
         req.query.includeBlockedBy === "1",
@@ -8333,6 +8338,10 @@ export function issueRoutes(
       includePluginOperations:
         req.query.includePluginOperations === "true" ||
         req.query.includePluginOperations === "1",
+      includeChatConversations:
+        req.actor.type === "agent" ||
+        req.query.includeChatConversations === "true" ||
+        req.query.includeChatConversations === "1",
       includeBlockedBy: true,
       includeBlockedInboxAttention: true,
       hasPlanDocument,

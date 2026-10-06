@@ -38,6 +38,11 @@ export interface DashboardSummary {
     blocked: number;
     done: number;
   };
+  /** Conversations started from external chats; excluded from `tasks`. */
+  chatConversations: {
+    open: number;
+    inProgress: number;
+  };
   costs: {
     monthSpendCents: number;
     monthBudgetCents: number;

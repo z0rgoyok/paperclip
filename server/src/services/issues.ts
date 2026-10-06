@@ -182,7 +182,7 @@ import {
   type IssueGraphLivenessInput,
   type IssueLivenessFinding,
 } from "./recovery/issue-graph-liveness.js";
-import { visibleIssueCondition } from "./issue-visibility.js";
+import { nonChatConversationIssueCondition, visibleIssueCondition } from "./issue-visibility.js";
 import { finalizeStatusCardsForStalledGeneration } from "./status-card-finalization.js";
 import { finalizeSummarySlotsForTerminalIssue } from "./summary-slot-finalization.js";
 import {
@@ -1819,6 +1819,7 @@ export interface IssueFilters {
   includeRoutineExecutions?: boolean;
   excludeRoutineExecutions?: boolean;
   includePluginOperations?: boolean;
+  includeChatConversations?: boolean;
   includeBlockedBy?: boolean;
   includeBlockedInboxAttention?: boolean;
   includeLiveDescendantSummary?: boolean;
@@ -3060,6 +3061,24 @@ function shouldIncludePluginOperationIssues(filters: IssueFilters | undefined) {
     filters?.originKindPrefix ||
     filters?.originId ||
     filters?.projectId,
+  );
+}
+
+/**
+ * Chat conversations are hidden from task lists and counters by default. They
+ * stay reachable by explicit opt-in, by origin filters, by text search and in
+ * the per-user inbox views, where a conversation can need attention.
+ */
+function shouldIncludeChatConversationIssues(filters: IssueFilters | undefined) {
+  return Boolean(
+    filters?.includeChatConversations ||
+    filters?.originKind ||
+    filters?.originKindPrefix ||
+    filters?.originId ||
+    filters?.q?.trim() ||
+    filters?.touchedByUserId ||
+    filters?.unreadForUserId ||
+    filters?.inboxArchivedByUserId,
   );
 }
 
@@ -7965,6 +7984,9 @@ export function issueService(db: Db) {
       if (!shouldIncludePluginOperationIssues(filters)) {
         conditions.push(nonPluginOperationIssueCondition());
       }
+      if (!shouldIncludeChatConversationIssues(filters)) {
+        conditions.push(nonChatConversationIssueCondition());
+      }
       if (filters?.labelId) {
         const labeledIssueIds = await db
           .select({ issueId: issueLabels.issueId })
@@ -8230,6 +8252,8 @@ export function issueService(db: Db) {
       }
       if (!shouldIncludePluginOperationIssues(filters))
         conditions.push(nonPluginOperationIssueCondition());
+      if (!shouldIncludeChatConversationIssues(filters))
+        conditions.push(nonChatConversationIssueCondition());
       const [row] = await db
         .select({ count: sql<number>`count(*)` })
         .from(issues)

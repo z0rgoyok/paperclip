@@ -77,6 +77,7 @@ import {
 } from "./chat-control-chronology.js";
 import { retryChatControlAdmission } from "./chat-control-admission-retry.js";
 import type { Db } from "@paperclipai/db";
+import { resolveChatConversationProjectId } from "./chat-conversation-project.js";
 import {
   createDurableChatWakeupRequest,
   assertDurableChatWakeupReceipt,
@@ -16089,9 +16090,15 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           const sessionGeneration = isLinear
             ? (latestConversation?.sessionGeneration ?? 0) + 1
             : 1;
+          const leadProjectId = await resolveChatConversationProjectId(
+            taskTx,
+            endpoint.companyId,
+            endpoint.assignedAgentId,
+          );
           const issue = await issuesSvc.create(
             endpoint.companyId,
             {
+              ...(leadProjectId ? { projectId: leadProjectId } : {}),
               title: safeTitle(
                 githubAutomatic
                   ? `PR #${githubAutomatic.context.pullNumber}: ${githubAutomatic.context.title}`
