@@ -1,5 +1,5 @@
 import { executionProjectionsForRuns } from "./execution-projection.js";
-import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -27,7 +27,7 @@ export interface ActivityFilters {
   entityType?: string;
   entityId?: string;
   limit?: number;
-  /** Drops events of chat conversations (originKind chat_channel); other entities stay. */
+  /** Drops events of chat conversations: their issues plus chat publications, actions and chat.* events. */
   excludeChatConversations?: boolean;
 }
 
@@ -358,6 +358,9 @@ export function activityService(db: Db) {
             sql`${activityLog.entityType} != 'issue'`,
             nonChatConversationIssueCondition(),
           )!,
+          // Chat flows also log publications, actions and retries on other entities.
+          notInArray(activityLog.entityType, ["chat_publication", "chat_action"]),
+          sql`${activityLog.action} NOT LIKE 'chat.%'`,
         );
       }
 

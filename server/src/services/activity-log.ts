@@ -173,7 +173,18 @@ export async function persistActivity(db: Db, input: LogActivityInput) {
     details: redactedDetails,
   }).returning({ id: activityLog.id });
 
+  // Live clients hide chat conversations from task-style toasts; the issue may
+  // not be in their cache, so the origin travels with the event.
+  const issueOriginKind = input.entityType === "issue" && isUuidLike(input.entityId)
+    ? await db
+        .select({ originKind: issues.originKind })
+        .from(issues)
+        .where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.entityId)))
+        .then((rows) => rows[0]?.originKind ?? null)
+    : null;
+
   const payload = {
+    originKind: issueOriginKind,
     actorType: input.actorType,
     actorId: input.actorId,
     action: input.action,

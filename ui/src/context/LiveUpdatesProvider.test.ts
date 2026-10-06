@@ -79,6 +79,36 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     },
   );
 
+  describe("issue activity toasts", () => {
+    const queryClient = { getQueryData: () => undefined } as never;
+    const actor = { userId: "owner", agentId: null };
+    const event = (action: string, originKind: string | null, details: Record<string, unknown> = {}) => ({
+      entityType: "issue",
+      entityId: "issue-1",
+      action,
+      actorType: "agent",
+      actorId: "agent-1",
+      originKind,
+      details: { identifier: "PAT-1", title: "Hello", status: "in_progress", _previous: { status: "todo" }, ...details },
+    });
+
+    it.each([
+      ["issue.created", {}],
+      ["issue.updated", {}],
+      ["issue.comment_added", { commentId: "c1", bodySnippet: "hi" }],
+    ])("shows no %s toast for a chat conversation", (action, details) => {
+      expect(__liveUpdatesTestUtils.buildActivityToast(queryClient, "company-1", event(action, "chat_channel", details), actor)).toBeNull();
+    });
+
+    it.each([
+      ["issue.created", {}],
+      ["issue.updated", {}],
+      ["issue.comment_added", { commentId: "c1", bodySnippet: "hi" }],
+    ])("keeps the %s toast for an ordinary task", (action, details) => {
+      expect(__liveUpdatesTestUtils.buildActivityToast(queryClient, "company-1", event(action, "manual", details), actor)).not.toBeNull();
+    });
+  });
+
   it("refreshes touched inbox queries and only the changed issue data for issue updates", () => {
     const invalidations: unknown[] = [];
     const queryClient = {

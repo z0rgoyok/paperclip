@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { asc, eq } from "drizzle-orm";
 import { activityService } from "../services/activity.js";
+import { logActivity } from "../services/activity-log.js";
+import { subscribeCompanyLiveEvents } from "../services/live-events.js";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 import {
@@ -2068,6 +2070,29 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
   });
 
+  it("carries the issue origin kind in the live activity payload", async () => {
+    const companyId = randomUUID();
+    const chatId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values({ id: chatId, companyId, title: "Chat", status: "todo", priority: "medium", originKind: "chat_channel", originId: "e:t:2" });
+    const seen: Array<Record<string, unknown>> = [];
+    const unsubscribe = subscribeCompanyLiveEvents(companyId, (event) => {
+      if (event.type === "activity.logged") seen.push(event.payload as Record<string, unknown>);
+    });
+    try {
+      await logActivity(db, { companyId, actorType: "system", actorId: "system", action: "issue.updated", entityType: "issue", entityId: chatId });
+    } finally {
+      unsubscribe();
+    }
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.originKind).toBe("chat_channel");
+  });
+
   it("drops chat conversation events from the dashboard activity feed on request", async () => {
     const f = await (async () => {
       const companyId = randomUUID();
@@ -2087,7 +2112,16 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
         companyId, actorType: "system", actorId: "system", action: "issue.updated", entityType: "issue", entityId: id,
       })));
       await db.insert(activityLog).values({ companyId, actorType: "system", actorId: "system", action: "company.updated", entityType: "company", entityId: companyId });
-      return { companyId, taskId, chatId };
+      const pubId = randomUUID();
+      const retryRunId = randomUUID();
+      await db.insert(activityLog).values([
+        { companyId, actorType: "user", actorId: "u", action: "chat.publication_requested", entityType: "chat_publication", entityId: pubId },
+        { companyId, actorType: "user", actorId: "u", action: "chat.action_requested", entityType: "chat_action", entityId: randomUUID() },
+        { companyId, actorType: "user", actorId: "u", action: "chat.failed_run_retry_requested", entityType: "heartbeat_run", entityId: retryRunId },
+        { companyId, actorType: "user", actorId: "u", action: "publication.delivered", entityType: "chat_publication", entityId: pubId },
+        { companyId, actorType: "user", actorId: "u", action: "heartbeat.cancelled", entityType: "heartbeat_run", entityId: randomUUID() },
+      ]);
+      return { companyId, taskId, chatId, pubId, retryRunId };
     })();
     const entityIds = async (excludeChatConversations?: boolean) =>
       (await activityService(db).list({ companyId: f.companyId, excludeChatConversations })).map((event) => event.entityId);
@@ -2095,6 +2129,13 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     const filtered = await entityIds(true);
     expect(filtered).toEqual(expect.arrayContaining([f.taskId, f.companyId]));
     expect(filtered).not.toContain(f.chatId);
+    expect(filtered).not.toContain(f.pubId);
+    expect(filtered).not.toContain(f.retryRunId);
+    expect(await entityIds()).toEqual(expect.arrayContaining([f.pubId, f.retryRunId]));
+    // Other heartbeat_run events stay.
+    const actions = (await activityService(db).list({ companyId: f.companyId, excludeChatConversations: true })).map((e) => e.action);
+    expect(actions).toContain("heartbeat.cancelled");
+    expect(actions.some((a) => a.startsWith("chat.") || a === "publication.delivered")).toBe(false);
   });
 
   it("excludes plugin operation issues from unread inbox counts", async () => {

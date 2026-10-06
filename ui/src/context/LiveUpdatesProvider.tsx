@@ -923,6 +923,9 @@ function buildActivityToast(
   const actorId = readString(payload.actorId);
   const actorType = readString(payload.actorType);
 
+  // Chat conversations are read in the chat itself; they never toast as tasks.
+  if (entityType === "issue" && readString(payload.originKind) === "chat_channel") return null;
+
   if (
     entityType !== "issue" ||
     !entityId ||
@@ -1828,6 +1831,7 @@ function closeSocketQuietly(
 
 export const __liveUpdatesTestUtils = {
   applyRunLifecycleToCompanyLiveRuns,
+  buildActivityToast,
   buildAgentStatusToast,
   buildRunStatusToast,
   closeSocketQuietly,
