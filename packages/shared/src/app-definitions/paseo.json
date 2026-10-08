@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "slug": "paseo",
+  "name": "Paseo",
+  "description": "Make the first assignment to a Paseo executor. Paseo owns execution and task state.",
+  "categories": [
+    "developer"
+  ],
+  "featured": true,
+  "branding": {
+    "logoUrl": "/brands/apps/paseo.svg",
+    "darkLogoUrl": "/brands/apps/paseo-dark.svg"
+  },
+  "urlPatterns": [],
+  "methods": [
+    {
+      "key": "handoff",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Make the initial assignment to an allowed Paseo project.",
+      "defaults": {},
+      "guidanceMd": "Enter your Paseo assignment endpoint ending in /mcp/handoff and its restricted assignment key. Assign work with paseo_assign. Reuse the same task_ref and brief when a reply is lost. The acceptance receipt ends Paperclip's role; execution, goals, task state and review remain in Paseo.",
+      "riskTier": "S3",
+      "label": "Assign work to Paseo",
+      "credentialFields": [
+        {
+          "key": "apiKey",
+          "label": "Assignment key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Paste the restricted Paseo assignment key",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "consoleLinks": {
+        "docs": "https://github.com/z0rgoyok/paseo/blob/main/docs/paperclip-handoff.md"
+      }
+    }
+  ],
+  "docsUrl": "https://github.com/z0rgoyok/paseo/blob/main/docs/paperclip-handoff.md"
+}
